@@ -1,40 +1,20 @@
 use plonkish_backend::util::binary_extension_fields::B128;
 use plonkish_backend::util::blaze_transcript::BlazeBlake2sTranscript;
 use plonkish_backend::util::transcript::{
-    Blake2sTranscript, Blake2s256Transcript, InMemoryTranscript, Keccak256Transcript,
-    TranscriptRead, TranscriptWrite,
+    Blake2sTranscript, InMemoryTranscript, TranscriptRead, TranscriptWrite,
 };
-use itertools::chain;
-use rayon::prelude::*;
-use plonkish_backend::pcs::Evaluation;
-use rand::Rng;
-use rand::rngs::OsRng;
-use benchmark::basefold_params::*;
 use itertools::Itertools;
+use rayon::prelude::*;
+use rand::rngs::OsRng;
 use plonkish_backend::{
-    poly::multilinear::MultilinearPolynomial,
-    halo2_curves::{
-        bn256::{Bn256, Fr},
-        secp256k1::Fp,
-    },
-    pcs::{
-        multilinear::{
-            blaze::{
-                setup as blaze_setup, trim as blaze_trim, BlazeCommitment,
-                CommitmentChunk as BlazeCommitmentChunk,
-            },
-            Basefold, BasefoldExtParams, MultilinearBrakedown, MultilinearKzg, ZeromorphFri,
-        },
-        univariate::Fri,
-        PolynomialCommitmentScheme,
+    pcs::multilinear::blaze::{
+        self, setup as blaze_setup, trim as blaze_trim, BlazeCommitment,
+        CommitmentChunk as BlazeCommitmentChunk,
     },
     util::{
-        arithmetic::{Field, PrimeField},
+        arithmetic::Field,
         avx_int_types::{u64::Blazeu64, BlazeField},
-        code::{BrakedownSpec1, BrakedownSpec3, BrakedownSpec6},
-        goldilocksMont::GoldilocksMont,
-        hash::{Blake2s, Blake2s256, Hash, Keccak256},
-        new_fields::Mersenne127,
+        hash::{Blake2s, Hash},
     },
 };
 
@@ -43,7 +23,6 @@ use std::{
     fmt::Display,
     fs::{create_dir, File, OpenOptions},
     io::Write,
-    iter,
     ops::Range,
     path::Path,
     time::{Duration, Instant},
@@ -51,34 +30,11 @@ use std::{
 
 const OUTPUT_DIR: &str = "./bench_data/pcs";
 
-#[derive(Debug)]
-struct P {}
-
-impl BasefoldExtParams for P{
-
-    fn get_rate() -> usize{
-    return 2;
-    }
-
-    fn get_basecode_rounds() -> usize{
-    return 2;
-    }
-
-    fn get_reps() -> usize{
-    return 1000;
-    }
-
-    fn get_rs_basecode() -> bool{
-    true
-    }
-    fn get_code_type() -> String{
-        "random".to_string()
-    }
-}
 fn main() {
-    let (systems,  k_range) = parse_args();
+    let (systems, log_per_row_range, blaze_log_rows) = parse_args();
     create_output(&systems);
-    k_range.for_each(|k| systems.iter().for_each(|system| system.bench(k)));
+    log_per_row_range
+        .for_each(|log_per_row| systems.iter().for_each(|system| system.bench(log_per_row, blaze_log_rows)));
 }
 
 fn average_duration(samples: &[Duration]) -> Duration {
@@ -91,260 +47,65 @@ fn average_duration(samples: &[Duration]) -> Duration {
     sum / window.len().max(1) as u32
 }
 
-fn bench_pcs<F, Pcs, T>(k: usize, pcs : System )
-where
-   F: PrimeField,
-   Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-   T: TranscriptRead<Pcs::CommitmentChunk, F>
-        + TranscriptWrite<Pcs::CommitmentChunk, F>
-        + InMemoryTranscript<Param = ()>,
-
-{
-
-    let mut rng = OsRng;
-    let poly_size = 1 << k;
-    let param = Pcs::setup(poly_size, 1, &mut rng).unwrap();
-
-    let (pp,vp) = Pcs::trim(&param, poly_size, 1).unwrap();
-
-
-
-
-    let mut transcript = T::new(());
-
-    let poly = MultilinearPolynomial::rand(k,OsRng);
-
-    let sample_size = sample_size(k);
-
-    let mut commit_times = Vec::new();
-    let mut times = Vec::new();
-    for _ in 0..sample_size{
-          println!("commit");
-       let cstart = Instant::now();
-       let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
-    
-       commit_times.push(cstart.elapsed());
-
-
-       let start = Instant::now();
-       let point = transcript.squeeze_challenges(k);
-       let eval = poly.evaluate(point.as_slice());
-       transcript.write_field_element(&eval).unwrap();  
-       Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
-       times.push(start.elapsed());
-    }
-    let avg = average_duration(&times);
-    let cavg = average_duration(&commit_times);
-
-    
-    writeln!(&mut pcs.commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
-    writeln!(&mut pcs.output(), "{k}, {}", avg.as_millis()).unwrap();    
-    
-
-
-
-    let mut end_size = 0;
-    while transcript.read_commitment().is_ok() {
-        end_size = end_size + 1;
-    }
-    let _ = writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (end_size) * 256);
-
-    let proof = transcript.into_proof();
-    //let timer = start_timer(|| format!("verify-{k}"));
-
-
-
-    let mut verifier_times = Vec::new();
-    for _ in 0..sample_size{
-        let proof = proof.clone();
-        let mut transcript = T::from_proof((),proof.as_slice());
-        let now = Instant::now();
-        let _ = Pcs::verify(
-            &vp,
-            &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
-            &transcript.squeeze_challenges(k),
-            &transcript.read_field_element().unwrap(),
-            &mut transcript); 
-       verifier_times.push(now.elapsed());
-   }
-   let vavg = average_duration(&verifier_times); 
-    writeln!(&mut pcs.verify_output(), "{:?}: {:?}", k, vavg.as_millis()).unwrap();
-    //let mut end_size = 0;
-    //while(transcript.read_commitment().is_ok()){
-    //    end_size = end_size + 1;
-    //}
-    //writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (start_size - end_size)*256);
-    //b
-    
-
-  //  end_timer(timer);
-  //  assert_eq!(result,Ok(()));
+fn print_bench_summary(
+    pcs: System,
+    log_per_row: usize,
+    log_rows: usize,
+    commit: Duration,
+    prove: Duration,
+    verify: Duration,
+) {
+    println!(
+        "pcs={} log_per_row={} log_rows={} commit_ms={} prove_ms={} verify_ms={}",
+        pcs,
+        log_per_row,
+        log_rows,
+        commit.as_millis(),
+        prove.as_millis(),
+        verify.as_millis()
+    );
 }
 
-#[allow(dead_code)]
-fn batch_bench_pcs<F, Pcs, T>(k: usize, batch_size:usize, pcs : System )
+fn bench_blaze<F, H, T1, T2>(log_per_row: usize, pcs: System, log_rows: usize, queries: usize)
 where
-   F: PrimeField,
-   Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
-   T: TranscriptRead<Pcs::CommitmentChunk, F>
-        + TranscriptWrite<Pcs::CommitmentChunk, F>
-        + InMemoryTranscript<Param = ()>,
-
-{
-    let mut rng = OsRng;
-    let poly_size = 1 << k;
-    let num_points = batch_size >> 1;
-
-    let evals = chain![
-        (0..num_points).map(|point| (0, point)),
-        (0..batch_size).map(|poly| (poly, 0)),
-        iter::repeat_with(|| (rng.gen_range(0..batch_size), rng.gen_range(0..num_points)))
-            .take(batch_size)
-    ]
-    .unique()
-    .collect_vec();
-
-
-    let param = Pcs::setup(poly_size, 1, &mut rng).unwrap();
-
-    let (pp, _vp) = Pcs::trim(&param, poly_size, 1).unwrap();
-
-    let mut transcript = T::new(());
-
-    let sample_size = sample_size(k);
-
-    let mut commit_times = Vec::new();
-    let mut times = Vec::new();
-    let polys = iter::repeat_with(|| MultilinearPolynomial::rand(k, OsRng))
-                    .take(batch_size)
-                    .collect_vec();
-    for _ in 0..sample_size{
-
-       let cstart = Instant::now();
-       let comms = Pcs::batch_commit_and_write(&pp, &polys, &mut transcript).unwrap();
-    
-       commit_times.push(cstart.elapsed());
-
-
-
-       let points = iter::repeat_with(|| transcript.squeeze_challenges(k))
-                    .take(num_points)
-                    .collect_vec();
-
-        let evals = evals
-                .iter()
-                .copied()
-                .map(|(poly, point)| Evaluation {
-                    poly,
-                    point,
-                    value: polys[poly].evaluate(&points[point]),
-                })
-                .collect_vec();
-
-
-        transcript
-            .write_field_elements(evals.iter().map(Evaluation::value))
-            .unwrap();
-       let start = Instant::now();
-       Pcs::batch_open(&pp, &polys, &comms, &points, &evals, &mut transcript).unwrap();
-      
-       times.push(start.elapsed());
-    }
-    let sum = times.iter().sum::<Duration>();
-    let csum = commit_times.iter().sum::<Duration>();
-    
-    let avg = sum / sample_size as u32;
-    let cavg = csum /sample_size as u32;
-
-    
-    writeln!(&mut pcs.batch_commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
-    writeln!(&mut pcs.batch_open_output(), "{k}, {}", avg.as_millis()).unwrap();    
-    
-
-    let mut end_size = 0;
-    while transcript.read_commitment().is_ok() {
-        end_size = end_size + 1;
-    }
-    let _ = writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (end_size) * 256);
-
-    //let timer = start_timer(|| format!("verify-{k}"));
-    //let result = {
-    //let mut transcript = T::from_proof((),proof.as_slice());
-    //let mut start_size = 0;
-    //while(transcript.read_commitment().is_ok()){
-     //   start_size = start_size + 1;T::from_proof((),proof.as_slice());
-    //}
-
-    //let mut transcript = T::from_proof((),proof.as_slice());
-    //let now = Instant::now();
-    //let b = Pcs::verify(
-      //      &vp,
-        //    &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
-          //  &transcript.squeeze_challenges(k),
-            //&transcript.read_field_element().unwrap(),
-            //&mut transcript
-    //);
-    //writeln!(&mut pcs.verify_output(), "{:?}: {:?}", k, now.elapsed().as_millis()).unwrap();
-    //let mut end_size = 0;
-    //while(transcript.read_commitment().is_ok()){
-    //    end_size = end_size + 1;
-    //}
-    //writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (start_size - end_size)*256);
-    //b
-    
-
-  //  end_timer(timer);
-  //  assert_eq!(result,Ok(()));
-}
-
-fn bench_blaze<F,H,T1,T2>(k: usize, pcs:System, log_rows:usize, queries:usize)
-where
-   F: BlazeField,
-   H: Hash,
-   T1: TranscriptRead<BlazeCommitmentChunk<H>, B128>
+    F: BlazeField,
+    H: Hash,
+    T1: TranscriptRead<BlazeCommitmentChunk<H>, B128>
         + TranscriptWrite<BlazeCommitmentChunk<H>, B128>
         + InMemoryTranscript<Param = ()>,
     T2: TranscriptRead<BlazeCommitmentChunk<H>, F>
         + TranscriptWrite<BlazeCommitmentChunk<H>, F>
         + InMemoryTranscript<Param = ()>,
 {
-
     let mut b128_transcript = T1::new(());
     let mut blaze_transcript = T2::new(());
- 
+
     let mut rng = OsRng;
     let num_rows = 1 << log_rows;
-    let poly_size = 1 << k;
-    let param = blaze_setup::<H>(poly_size, 2, &mut rng,Some(num_rows),Some(queries));
-    let (pp,vp) = blaze_trim::<H>(&param, poly_size, 1);
+    let poly_size = 1 << log_per_row;
+    let param = blaze_setup::<H>(poly_size, 2, &mut rng, Some(num_rows), Some(queries));
+    let (pp, vp) = blaze_trim::<H>(&param, poly_size, 1);
 
-    //creating a random matrix with 16 columns of 256-bit words                               
     let matrix = (0..num_rows)
         .into_par_iter()
-        .map(|_| F::rand_vec(poly_size as usize))
+        .map(|_| F::rand_vec(poly_size))
         .collect::<Vec<_>>();
 
-    let sample_size = sample_size(k);
+    let sample_size = sample_size(log_per_row);
 
     let mut commit_times = Vec::new();
-    let mut times = Vec::new();
+    let mut prove_times = Vec::new();
     let mut comm = BlazeCommitment::default();
-    let mut point =  Vec::new();
-    for _ in 0..sample_size{
-        let cstart = Instant::now();
-        comm = plonkish_backend::pcs::multilinear::blaze::commit_and_write::<F, H>(
-            &pp,
-            &matrix,
-            &mut blaze_transcript,
-        );
-        commit_times.push(cstart.elapsed());
-   
-     
-        point = b128_transcript.squeeze_challenges(k); //this is mod - should actually squeeze blaze challenges and convert
-      //  let eval = poly.evaluate(point.as_slice());
-     //   b128_transcript.write_field_element(&eval).unwrap();  
-        let start = Instant::now();
-        plonkish_backend::pcs::multilinear::blaze::open(
+    let mut point = Vec::new();
+
+    for _ in 0..sample_size {
+        let commit_start = Instant::now();
+        comm = blaze::commit_and_write::<F, H>(&pp, &matrix, &mut blaze_transcript);
+        commit_times.push(commit_start.elapsed());
+
+        point = b128_transcript.squeeze_challenges(log_per_row);
+        let prove_start = Instant::now();
+        blaze::open(
             &pp,
             &matrix,
             &comm,
@@ -354,182 +115,50 @@ where
             &mut b128_transcript,
         )
         .unwrap();
-        times.push(start.elapsed());
+        prove_times.push(prove_start.elapsed());
     }
-    let avg = average_duration(&times);
-    let cavg = average_duration(&commit_times);
 
-    
-    writeln!(&mut pcs.commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
-    writeln!(&mut pcs.output(), "{k}, {}", avg.as_millis()).unwrap();    
-    
+    let commit_avg = average_duration(&commit_times);
+    let prove_avg = average_duration(&prove_times);
+
+    writeln!(&mut pcs.commit_output(), "{log_per_row}, {}", commit_avg.as_millis()).unwrap();
+    writeln!(&mut pcs.output(), "{log_per_row}, {}", prove_avg.as_millis()).unwrap();
+
     let blaze_proof = blaze_transcript.into_proof();
     let b128_proof = b128_transcript.into_proof();
-    //let timer = start_timer(|| format!("verify-{k}"));
 
-  
-
-
-    let mut verifier_times = Vec::new();
-    for _ in 0..sample_size{
+    let mut verify_times = Vec::new();
+    for _ in 0..sample_size {
         let blaze_proof = blaze_proof.clone();
         let b128_proof = b128_proof.clone();
-        let mut blaze_transcript = T2::from_proof((),blaze_proof.as_slice());
-        let mut b128_transcript  = T1::from_proof((),b128_proof.as_slice());
-        let now = Instant::now();
-        let _ = plonkish_backend::pcs::multilinear::blaze::verify(
+        let mut blaze_transcript = T2::from_proof((), blaze_proof.as_slice());
+        let mut b128_transcript = T1::from_proof((), b128_proof.as_slice());
+        let verify_start = Instant::now();
+        let _ = blaze::verify(
             &vp,
             &comm,
             &point,
             &F::zero(),
             &mut b128_transcript,
-            &mut blaze_transcript);
-        verifier_times.push(now.elapsed());
-
-    }
-
-    let vavg = average_duration(&verifier_times);
-
-    writeln!(&mut pcs.verify_output(), "{:?}: {:?}", k, vavg.as_millis()).unwrap();
-}
-
-
-#[allow(dead_code)]
-fn bench_faster_blaze<F,H,T1,T2>(k: usize, pcs:System, log_rows:usize, queries:usize)
-where
-   F: BlazeField,
-   H: Hash,
-   T1: TranscriptRead<BlazeCommitmentChunk<H>, B128>
-        + TranscriptWrite<BlazeCommitmentChunk<H>, B128>
-        + InMemoryTranscript<Param = ()>,
-    T2: TranscriptRead<BlazeCommitmentChunk<H>, F>
-        + TranscriptWrite<BlazeCommitmentChunk<H>, F>
-        + InMemoryTranscript<Param = ()>,
-{
-
-    let mut b128_transcript = T1::new(());
-    let mut blaze_transcript = T2::new(());
- 
-    let mut rng = OsRng;
-    let num_rows = 1 << log_rows;
-    let poly_size = 1 << k;
-    let param = blaze_setup::<H>(poly_size, 1, &mut rng,Some(num_rows),Some(queries));
-    let (pp,vp) = blaze_trim::<H>(&param, poly_size, 1);
-
-    //creating a random matrix with 16 columns of 256-bit words                               
-    let matrix = (0..num_rows)
-        .into_par_iter()
-        .map(|_| F::rand_vec(poly_size as usize))
-        .collect::<Vec<_>>();
-
-    let sample_size = sample_size(k);
-
-    let mut commit_times = Vec::new();
-    let mut times = Vec::new();
-    let mut comm = BlazeCommitment::default();
-    let mut point =  Vec::new();
-    for _ in 0..sample_size{
-        let cstart = Instant::now();
-        comm = plonkish_backend::pcs::multilinear::blaze::commit_and_write::<F, H>(
-            &pp,
-            &matrix,
             &mut blaze_transcript,
         );
-        commit_times.push(cstart.elapsed());
-   
-     
-        point = b128_transcript.squeeze_challenges(k); //this is mod - should actually squeeze blaze challenges and convert
-      //  let eval = poly.evaluate(point.as_slice());
-     //   b128_transcript.write_field_element(&eval).unwrap();  
-        let start = Instant::now();
-        plonkish_backend::pcs::multilinear::blaze::faster_open(
-            &pp,
-            &matrix,
-            &comm,
-            &point,
-            &B128::ZERO,
-            &mut blaze_transcript,
-            &mut b128_transcript,
-        )
-        .unwrap();
-        times.push(start.elapsed());
-    }
-    let avg = average_duration(&times);
-    let cavg = average_duration(&commit_times);
-
-    
-    writeln!(&mut pcs.commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
-    writeln!(&mut pcs.output(), "{k}, {}", avg.as_millis()).unwrap();    
-    
-    let blaze_proof = blaze_transcript.into_proof();
-    let b128_proof = b128_transcript.into_proof();
-    //let timer = start_timer(|| format!("verify-{k}"));
-
-  
-
-
-    let mut verifier_times = Vec::new();
-    for _ in 0..sample_size{
-        let blaze_proof = blaze_proof.clone();
-        let b128_proof = b128_proof.clone();
-        let mut blaze_transcript = T2::from_proof((),blaze_proof.as_slice());
-        let mut b128_transcript  = T1::from_proof((),b128_proof.as_slice());
-        let now = Instant::now();
-        let _ = plonkish_backend::pcs::multilinear::blaze::faster_verify(
-            &vp,
-            &comm,
-            &point,
-            &F::zero(),
-            &mut b128_transcript,
-            &mut blaze_transcript);
-        verifier_times.push(now.elapsed());
-
+        verify_times.push(verify_start.elapsed());
     }
 
-    let vavg = average_duration(&verifier_times);
+    let verify_avg = average_duration(&verify_times);
+    print_bench_summary(pcs, log_per_row, log_rows, commit_avg, prove_avg, verify_avg);
 
-    writeln!(&mut pcs.verify_output(), "{:?}: {:?}", k, vavg.as_millis()).unwrap();
+    writeln!(&mut pcs.verify_output(), "{:?}: {:?}", log_per_row, verify_avg.as_millis()).unwrap();
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum System {
-    MultilinearKzg,
-    Basefold256,
-    Basefold61Mersenne,
-    BasefoldBlake2s,
-    Brakedown,
-    BrakedownBlake2s,
-    ZeromorphFri,
     Blaze64,
-    BasefoldFri2,
-    BasefoldFri4,
-    BasefoldFri8,
-    Brakedown1,
-    Brakedown3,
-    Brakedown6
 }
 
 impl System {
     fn all() -> Vec<System> {
-        vec![
-        System::MultilinearKzg,
-        System::Basefold61Mersenne,
-        System::Basefold256,
-        System::Brakedown,
-        System::BasefoldBlake2s,
-        System::BrakedownBlake2s,
-        System::ZeromorphFri,
-        System::Blaze64,
-        System::BasefoldFri2,
-        System::BasefoldFri4,
-        System::BasefoldFri8, 
-        System::Brakedown1, 
-        System::Brakedown3,
-        System::Brakedown6
-        
-    
-        ]
+        vec![System::Blaze64]
     }
 
     fn output_path(&self) -> String {
@@ -537,20 +166,11 @@ impl System {
     }
 
     fn output(&self) -> File {
-        OpenOptions::new()
-            .append(true)
-            .open(self.output_path())
-            .unwrap()
-    }
-    fn batch_open_output_path(&self) -> String {
-        format!("{OUTPUT_DIR}/batch_open_{self}")
+        OpenOptions::new().append(true).open(self.output_path()).unwrap()
     }
 
     fn commit_output_path(&self) -> String {
         format!("{OUTPUT_DIR}/commit_{self}")
-    }
-    fn batch_commit_output_path(&self) -> String {
-        format!("{OUTPUT_DIR}/batch_commit_{self}")
     }
 
     fn size_output_path(&self) -> String {
@@ -559,199 +179,89 @@ impl System {
 
     fn verify_output_path(&self) -> String {
         format!("{OUTPUT_DIR}/verify_{self}")
-    }    
+    }
+
+    fn batch_open_output_path(&self) -> String {
+        format!("{OUTPUT_DIR}/batch_open_{self}")
+    }
+
+    fn batch_commit_output_path(&self) -> String {
+        format!("{OUTPUT_DIR}/batch_commit_{self}")
+    }
 
     fn commit_output(&self) -> File {
-
-        OpenOptions::new()
-            .append(true)
-            .open(self.commit_output_path())
-            .unwrap()
-    }
-    #[allow(dead_code)]
-    fn batch_commit_output(&self) -> File {
-
-        OpenOptions::new()
-            .append(true)
-            .open(self.batch_commit_output_path())
-            .unwrap()
+        OpenOptions::new().append(true).open(self.commit_output_path()).unwrap()
     }
 
-    #[allow(dead_code)]
-    fn batch_open_output(&self) -> File {
-
-        OpenOptions::new()
-            .append(true)
-            .open(self.batch_open_output_path())
-            .unwrap()
-    }
     fn size_output(&self) -> File {
-        OpenOptions::new()
-            .append(true)
-            .open(self.size_output_path())
-            .unwrap()
+        OpenOptions::new().append(true).open(self.size_output_path()).unwrap()
     }
-
 
     fn verify_output(&self) -> File {
-        OpenOptions::new()
-            .append(true)
-            .open(self.verify_output_path())
-            .unwrap()
-    }        
-
-
-    fn bench(&self, k: usize) {
-    type Kzg = MultilinearKzg<Bn256>;
-    type Brakedown = MultilinearBrakedown<Fp, Keccak256, BrakedownSpec6>;
-    type BrakedownBlake2s = MultilinearBrakedown<GoldilocksMont, Blake2s, BrakedownSpec1>;  
-    type Brakedown1 = MultilinearBrakedown<Mersenne127, Blake2s, BrakedownSpec1>;
-    type Brakedown3 = MultilinearBrakedown<Mersenne127, Blake2s, BrakedownSpec3>;
-    type Brakedown6 = MultilinearBrakedown<GoldilocksMont, Blake2s, BrakedownSpec6>;
-
-
-        match self {
-        System::MultilinearKzg => bench_pcs::<_, Kzg, Blake2sTranscript<_>>(k, System::MultilinearKzg),
-        System::Basefold61Mersenne => bench_pcs::<Mersenne127, Basefold<Mersenne127,Blake2s,P>, Blake2sTranscript<_>>(k, System::Basefold61Mersenne),
-        System::Basefold256 => bench_pcs::<Fr, Basefold<Fr,Blake2s256,BasefoldFri>, Blake2s256Transcript<_>>(k, System::Basefold256),       
-        System::Brakedown => bench_pcs::<Fp, Brakedown, Keccak256Transcript<_>>(k,System::Brakedown),
-        System::BasefoldBlake2s => {
-        match k {
-              10 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Ten>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          11 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Eleven>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          12 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Twelve>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          13 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Thirteen>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          14 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Fourteen>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          15 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Fifteen>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          16 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Sixteen>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          17 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Seventeen>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          18 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Eighteen>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          19 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Nineteen>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          20 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,Twenty>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          21 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,TwentyOne>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          22 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,TwentyTwo>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          23 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,TwentyThree>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          24 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,TwentyFour>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          25 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,TwentyFive>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),
-          26 => bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont,Blake2s,TwentySix>, Blake2sTranscript<_>>(k,System::BasefoldBlake2s),         
-          _ => {}
-           }
-        }
-
-        System::BrakedownBlake2s => bench_pcs::<GoldilocksMont, BrakedownBlake2s, Blake2sTranscript<_>>(k,System::BrakedownBlake2s),
-        System::ZeromorphFri => {
-            bench_pcs::<GoldilocksMont, ZeromorphFri<Fri<GoldilocksMont,Blake2s>>, Blake2sTranscript<_>>(22, System::ZeromorphFri);
-            bench_pcs::<GoldilocksMont, ZeromorphFri<Fri<GoldilocksMont,Blake2s>>, Blake2sTranscript<_>>(23, System::ZeromorphFri);
-            bench_pcs::<GoldilocksMont, ZeromorphFri<Fri<GoldilocksMont,Blake2s>>, Blake2sTranscript<_>>(24, System::ZeromorphFri);
-            bench_pcs::<GoldilocksMont, ZeromorphFri<Fri<GoldilocksMont,Blake2s>>, Blake2sTranscript<_>>(25, System::ZeromorphFri);
-            bench_pcs::<GoldilocksMont, ZeromorphFri<Fri<GoldilocksMont,Blake2s>>, Blake2sTranscript<_>>(26, System::ZeromorphFri);
-            bench_pcs::<GoldilocksMont, ZeromorphFri<Fri<GoldilocksMont,Blake2s>>, Blake2sTranscript<_>>(27, System::ZeromorphFri);
-            bench_pcs::<GoldilocksMont, ZeromorphFri<Fri<GoldilocksMont,Blake2s>>, Blake2sTranscript<_>>(28, System::ZeromorphFri);
-        },
-        System::Blaze64 => {
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,1,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,2,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,3,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,4,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,5,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,6,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,7,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,8,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,9,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,10,2004);
-            bench_blaze::<Blazeu64, Blake2s,Blake2sTranscript<_>,BlazeBlake2sTranscript<_>>(21, System::Blaze64,11,2004);
-        },
-        System::BasefoldFri2 => {
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(22,System::BasefoldFri2);
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(23,System::BasefoldFri2);
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(24,System::BasefoldFri2);
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(25,System::BasefoldFri2);
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(26,System::BasefoldFri2);
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(27,System::BasefoldFri2);
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(28,System::BasefoldFri2);
-            bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFri>,Blake2sTranscript<_>>(29,System::BasefoldFri2);
-        },
-        System::BasefoldFri4 => bench_pcs::<Mersenne127, Basefold<Mersenne127, Blake2s, BasefoldFriR4>,Blake2sTranscript<_>>(k, System::BasefoldFri4),
-        System::BasefoldFri8 => bench_pcs::<Mersenne127, Basefold<Mersenne127, Blake2s, BasefoldFriR8>,Blake2sTranscript<_>>(k, System::BasefoldFri8),
-        System::Brakedown1 =>  bench_pcs::<Mersenne127, Brakedown1, Blake2sTranscript<_>>(k, System::Brakedown1),
-        System::Brakedown3 =>  bench_pcs::<Mersenne127, Brakedown3, Blake2sTranscript<_>>(k, System::Brakedown3),
-        System::Brakedown6 =>  {
-            bench_pcs::<GoldilocksMont, Brakedown6, Blake2sTranscript<_>>(30, System::Brakedown6);
-            bench_pcs::<GoldilocksMont, Brakedown6, Blake2sTranscript<_>>(31, System::Brakedown6);
-            bench_pcs::<GoldilocksMont, Brakedown6, Blake2sTranscript<_>>(32, System::Brakedown6);
-        }
-
-//        System::BrakedownBlake2s => batch_bench_pcs::<GoldilocksMont, BrakedownBlake2s, Blake2sTranscript<_>>(k,BATCH_SIZE,System::BrakedownBlake2s),
-//       System::ZeromorphFri => batch_bench_pcs::<Fr, ZeromorphFri<Fri<Fr,Blake2s>>, Blake2sTranscript<_>>(k, BATCH_SIZE,System::ZeromorphFri),
-//        System::BasefoldFri2 => batch_bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFriR2>,Blake2sTranscript<_>>(k, BATCH_SIZE, System::BasefoldFri2),
-//        System::BasefoldFri4 => batch_bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFriR4>,Blake2sTranscript<_>>(k, BATCH_SIZE,System::BasefoldFri4),
-//        System::BasefoldFri8 => batch_bench_pcs::<GoldilocksMont, Basefold<GoldilocksMont, Blake2s, BasefoldFriR8>,Blake2sTranscript<_>>(k,BATCH_SIZE, System::BasefoldFri8),
-//        System::Brakedown1 =>  batch_bench_pcs::<Mersenne127, Brakedown1, Blake2sTranscript<_>>(k,BATCH_SIZE,System::Brakedown1),
-//        System::Brakedown3 =>  batch_bench_pcs::<Mersenne127, Brakedown3, Blake2sTranscript<_>>(k,BATCH_SIZE,System::Brakedown3),
-//        System::Brakedown6 =>  batch_bench_pcs::<Mersenne127, Brakedown6, Blake2sTranscript<_>>(k,BATCH_SIZE,System::Brakedown6)
-
-
-            
+        OpenOptions::new().append(true).open(self.verify_output_path()).unwrap()
     }
+
+    fn bench(&self, log_per_row: usize, blaze_log_rows: usize) {
+        match self {
+            System::Blaze64 => {
+                bench_blaze::<Blazeu64, Blake2s, Blake2sTranscript<_>, BlazeBlake2sTranscript<_>>(
+                    log_per_row,
+                    System::Blaze64,
+                    blaze_log_rows,
+                    2004,
+                );
+            }
+        }
     }
 }
 
 impl Display for System {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-        System::Basefold256 => write!(f, "basefold256"),
-        System::Basefold61Mersenne => write!(f, "basefold61Mersenne"),
-        System::MultilinearKzg => write!(f, "kzg"),
-        System::Brakedown => write!(f, "brakedown"),
-        System::BrakedownBlake2s => write!(f,"brakedown_blake"),
-        System::BasefoldBlake2s => write!(f,"basefold_blake"),
-        System::ZeromorphFri => write!(f, "zeromorph_fri"),
-        System::Blaze64 => write!(f, "blaze64"),
-        System::BasefoldFri2 => write!(f, "basefoldfri2"),
-        System::BasefoldFri4 => write!(f, "basefoldfri4"),
-        System::BasefoldFri8 => write!(f, "basefoldfri8"),
-        System::Brakedown1 => write!(f, "brakedown1"),
-        System::Brakedown3 => write!(f, "brakedown3"),
-        System::Brakedown6 => write!(f, "brakedown6")
+            System::Blaze64 => write!(f, "blaze64"),
         }
     }
 }
 
-
-
-
-fn parse_args() -> (Vec<System>, Range<usize>) {
-    let (systems, k_range) = args().chain(Some("".to_string())).tuple_windows().fold(
-        (Vec::new(),  15..16),
-        |(mut systems,  mut k_range), (key, value)| {
-            match key.as_str() {
-                "--system" => match value.as_str() {
-                    "all" => systems = System::all(),
-                    "basefold256" => systems.push(System::Basefold256),
-                    "multilinearkzg" => systems.push(System::MultilinearKzg),                      _ => panic!(
-                        "system should be one of {{all,hyperplonk,halo2,espresso_hyperplonk}}"
-                    ),
-                },
-                "--k" => {
-                    if let Some((start, end)) = value.split_once("..") {
-                        k_range = start.parse().expect("k range start to be usize")
-                            ..end.parse().expect("k range end to be usize");
-                    } else {
-                        k_range.start = value.parse().expect("k to be usize");
-                        k_range.end = k_range.start + 1;
+fn parse_args() -> (Vec<System>, Range<usize>, usize) {
+    let (systems, log_per_row_range, blaze_log_rows) = args()
+        .chain(Some("".to_string()))
+        .tuple_windows()
+        .fold(
+            (Vec::new(), 15..16, 5usize),
+            |(mut systems, mut log_per_row_range, mut blaze_log_rows), (key, value)| {
+                match key.as_str() {
+                    "--system" => match value.as_str() {
+                        "all" => systems = System::all(),
+                        "blaze64" => systems.push(System::Blaze64),
+                        _ => panic!("system should be one of {{all,blaze64}}"),
+                    },
+                    "--log-per-row" => {
+                        if let Some((start, end)) = value.split_once("..") {
+                            log_per_row_range = start
+                                .parse()
+                                .expect("log_per_row range start to be usize")
+                                ..end.parse().expect("log_per_row range end to be usize");
+                        } else {
+                            log_per_row_range.start =
+                                value.parse().expect("log_per_row to be usize");
+                            log_per_row_range.end = log_per_row_range.start + 1;
+                        }
                     }
+                    "--log-rows" => {
+                        blaze_log_rows = value.parse().expect("log_rows to be usize");
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            (systems, k_range)
-        },
-    );
+                (systems, log_per_row_range, blaze_log_rows)
+            },
+        );
 
     let mut systems = systems.into_iter().sorted().dedup().collect_vec();
     if systems.is_empty() {
         systems = System::all();
-    };
-    (systems,  k_range)
+    }
+    (systems, log_per_row_range, blaze_log_rows)
 }
 
 fn create_output(systems: &[System]) {
@@ -764,27 +274,10 @@ fn create_output(systems: &[System]) {
         File::create(system.commit_output_path()).unwrap();
         File::create(system.batch_commit_output_path()).unwrap();
         File::create(system.size_output_path()).unwrap();
-        File::create(system.verify_output_path()).unwrap();         
+        File::create(system.verify_output_path()).unwrap();
     }
 }
 
-#[allow(dead_code)]
-fn sample<T>(system: System, k: usize, prove: impl Fn() -> T) -> T {
-    let mut proof = None;
-    let sample_size = sample_size(k);
-    let sum = iter::repeat_with(|| {
-        let start = Instant::now();
-        proof = Some(prove());
-        start.elapsed()
-    })
-    .take(sample_size)
-    .sum::<Duration>();
-    let avg = sum / sample_size as u32;
-    writeln!(&mut system.output(), "{k}, {}", avg.as_millis()).unwrap();
-    proof.unwrap()
-}
-
-fn sample_size(_k: usize) -> usize {
+fn sample_size(_log_per_row: usize) -> usize {
     1
-
 }
