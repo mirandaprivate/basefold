@@ -50,7 +50,7 @@ use crate::pcs::multilinear::{additive, validate_input, Basefold, BasefoldCommit
 use crate::util::avx_int_types::{u64::Blazeu64, BlazeField};
 use crate::util::binary_extension_fields::B128;
 use crate::util::blaze_transcript::BlazeBlake2sTranscript;
-use crate::util::code::{repetition_code_long, serial_accumulator_long};
+use crate::util::code::{parallel_accumulator_long, repetition_code_long};
 use crate::util::hash::Blake2s;
 use crate::util::transcript::{
     Blake2sTranscript, FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite,
@@ -307,7 +307,7 @@ pub fn commit<F: BlazeField, H: Hash>(
 
     //println!("encode time {:?}", now.elapsed());
     let now = Instant::now();
-    let tree = merkelize_long::<H, F>(&codeword);
+    let tree = merkelize_long_par::<H, F>(&codeword);
     println!(
         "degree {:?}, raa merkle time {:?}",
         pp.num_vars,
@@ -345,7 +345,7 @@ pub fn commit_2<F: BlazeField, H: Hash>(
 
     // println!("encode time {:?}", now.elapsed());
     let now = Instant::now();
-    let tree = merkelize_long::<H, F>(&codeword);
+    let tree = merkelize_long_par::<H, F>(&codeword);
     println!(
         "degree {:?}, raa merkle time {:?}",
         pp.num_vars,
@@ -551,23 +551,23 @@ pub fn open<F: BlazeField, H: Hash>(
     let u1 = repetition_code_long(&folded_poly_blaze, (1 << pp.log_rate));
     let u2 = pp.permutation.interleave_long(&u1);
     let mut u3 = u2.clone();
-    serial_accumulator_long(&mut u3);
+    parallel_accumulator_long(&mut u3);
     let u4 = pp.permutation.interleave_long(&u3);
     let mut u5 = u4.clone();
-    serial_accumulator_long(&mut u5);
+    parallel_accumulator_long(&mut u5);
 
     println!("intermediate raa steps {:?}", now.elapsed());
 
     let now = Instant::now();
 
-    let mut raa_words = vec![u1,u2,u4];
-    let mut raa_b128 = Vec::new();
-    for word in raa_words {
-        raa_b128.push(bf_to_b128_vec_long(&word));
-    }
+    let raa_words = vec![u1, u2, u4];
+    let raa_b128 = raa_words
+        .into_par_iter()
+        .map(|word| bf_to_b128_vec_long(&word))
+        .collect::<Vec<_>>();
 
     let ml_polys = raa_b128
-        .iter()
+        .par_iter()
         .map(|v| {
             let mut poly = v.to_vec();
             poly.resize(v.len() * 2, B128::zero());

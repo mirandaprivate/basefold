@@ -5,6 +5,7 @@ use plonkish_backend::util::transcript::{
     TranscriptRead, TranscriptWrite,
 };
 use itertools::chain;
+use rayon::prelude::*;
 use plonkish_backend::pcs::Evaluation;
 use rand::Rng;
 use rand::rngs::OsRng;
@@ -318,10 +319,10 @@ where
     let (pp,vp) = blaze_trim::<H>(&param, poly_size, 1);
 
     //creating a random matrix with 16 columns of 256-bit words                               
-    let mut matrix = Vec::new();
-    for _ in 0..num_rows{
-        matrix.push(F::rand_vec(poly_size as usize));
-    }
+    let matrix = (0..num_rows)
+        .into_par_iter()
+        .map(|_| F::rand_vec(poly_size as usize))
+        .collect::<Vec<_>>();
 
     let sample_size = sample_size(k);
 
@@ -416,10 +417,10 @@ where
     let (pp,vp) = blaze_trim::<H>(&param, poly_size, 1);
 
     //creating a random matrix with 16 columns of 256-bit words                               
-    let mut matrix = Vec::new();
-    for _ in 0..num_rows{
-        matrix.push(F::rand_vec(poly_size as usize));
-    }
+    let matrix = (0..num_rows)
+        .into_par_iter()
+        .map(|_| F::rand_vec(poly_size as usize))
+        .collect::<Vec<_>>();
 
     let sample_size = sample_size(k);
 

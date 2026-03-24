@@ -95,16 +95,17 @@ impl Permutation{
 
 
     pub fn interleave_long<F:BlazeField>(&self, input: &Vec<Vec<F>>) -> Vec<Vec<F>>{
-        let mut new_inputs = Vec::new();
-        for vec in input{
-            let mut new_input = vec![F::zero(); vec.len()];
-            new_input.par_iter_mut().enumerate().for_each(|(i, mut x)| {
-                let mut j = self.permutation2[i];
-                *x = vec[j];
-            });
-            new_inputs.push(new_input);
-        }
-        new_inputs
+        input
+            .par_iter()
+            .map(|vec| {
+                let mut new_input = vec![F::zero(); vec.len()];
+                new_input.par_iter_mut().enumerate().for_each(|(i, mut x)| {
+                    let j = self.permutation2[i];
+                    *x = vec[j];
+                });
+                new_input
+            })
+            .collect()
     }
 
 
@@ -167,6 +168,16 @@ fn serial_accumulator<F:BlazeField>(mut input: &mut Vec<F>) {
 pub fn serial_accumulator_long<F:BlazeField>(mut input:&mut Vec<Vec<F>>){
     input.par_iter_mut().for_each(|mut v|{
         serial_accumulator(&mut v);
+    });
+}
+
+pub fn parallel_accumulator_long<F:BlazeField>(input: &mut Vec<Vec<F>>) {
+    input.par_iter_mut().for_each(|v| {
+        if v.len() >= 8 {
+            parallel_accumulator(v);
+        } else {
+            serial_accumulator(v);
+        }
     });
 }
 
@@ -346,11 +357,23 @@ pub fn encode_bits_ser<F:BlazeField>(
     rate: usize
 ) -> Vec<F> {
     let mut first_round = p.repeat_interleave(message, rate); // Repeat and interleave.
-    serial_accumulator(&mut first_round); // Accumulate
+    if first_round.len() >= 8 {
+        parallel_accumulator(&mut first_round);
+    } else {
+        serial_accumulator(&mut first_round);
+    }
     let mut second_round = p.interleave2(first_round); // Interleave
-    serial_accumulator(&mut second_round); // Accumulate
+    if second_round.len() >= 8 {
+        parallel_accumulator(&mut second_round);
+    } else {
+        serial_accumulator(&mut second_round);
+    }
     let mut third_round = p.interleave3(second_round);
-    serial_accumulator(&mut third_round);
+    if third_round.len() >= 8 {
+        parallel_accumulator(&mut third_round);
+    } else {
+        serial_accumulator(&mut third_round);
+    }
     third_round
 }
 pub fn encode_bits_long<F:BlazeField>(
@@ -365,12 +388,12 @@ pub fn encode_bits_long<F:BlazeField>(
     let mut first_round = p1.repeat_interleave_long(message, rate); // Repeat and interleave.
 
  //   assert_eq!(first_round[0].len(),x*rate);
-    serial_accumulator_long(&mut first_round); // Accumulate
+    parallel_accumulator_long(&mut first_round); // Accumulate
  //   assert_eq!(first_round[0].len(),x*rate);
     let mut second_round = p2.interleave_long(&first_round); // Interleave
  //   assert_eq!(second_round[0].len(),x*rate);
 
-    serial_accumulator_long(&mut second_round); // Accumulate
+    parallel_accumulator_long(&mut second_round); // Accumulate
 
 
     second_round
@@ -636,4 +659,3 @@ mod tests {
     }
 }
 */
-
