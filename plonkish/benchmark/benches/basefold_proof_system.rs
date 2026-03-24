@@ -1,7 +1,7 @@
 use benchmark::{
     espresso,
     halo2::{AggregationCircuit, Sha256Circuit},
-    BasefoldParams::*
+    basefold_params::*
 };
 use espresso_hyperplonk::{prelude::MockCircuit, HyperPlonkSNARK};
 use espresso_subroutines::{MultilinearKzgPCS, PolyIOP, PolynomialCommitmentScheme};

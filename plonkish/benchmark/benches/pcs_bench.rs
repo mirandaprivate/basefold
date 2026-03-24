@@ -1,36 +1,20 @@
 use rand::rngs::OsRng;
 use benchmark::{
-    espresso,
-    halo2::{AggregationCircuit, Sha256Circuit},
-    BasefoldParams::*    
+    basefold_params::*    
 };
 
-use halo2_proofs::{
-    plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
-    poly::kzg::{
-        commitment::ParamsKZG,
-        multiopen::{ProverGWC, VerifierGWC},
-        strategy::SingleStrategy,
-    },
-    transcript::{Blake2bRead, Blake2bWrite, TranscriptReadBuffer, TranscriptWriterBuffer},
-};
 use itertools::Itertools;
 use plonkish_backend::{
     poly::multilinear::{MultilinearPolynomial},
-    backend::{self, PlonkishBackend, PlonkishCircuit},
-    frontend::halo2::{circuit::VanillaPlonk, CircuitExt, Halo2Circuit},
     halo2_curves::{bn256::{Bn256, Fr}, secp256k1::Fp},
     pcs::{PolynomialCommitmentScheme, multilinear::{MultilinearKzg,Basefold,MultilinearBrakedown, ZeromorphFri, BasefoldExtParams }, univariate::Fri},
     util::{
         end_timer, start_timer,
-        test::std_rng,
         transcript::{InMemoryTranscript, Blake2sTranscript, Keccak256Transcript, TranscriptRead, TranscriptWrite, Blake2s256Transcript},
 	hash::{Keccak256,Blake2s256,Blake2s},
-	arithmetic::{PrimeField,sum},
+	arithmetic::PrimeField,
 	code::{BrakedownSpec6, BrakedownSpec1},
-	new_fields::{Mersenne127, Mersenne61},
-	mersenne_61_mont::Mersenne61Mont,
-	ff_255::{ff255::Ft255, ft127::Ft127, ft63::Ft63},
+	new_fields::Mersenne127,
 	goldilocksMont::GoldilocksMont
     },
 };
@@ -48,7 +32,6 @@ use std::{
 
 
 const OUTPUT_DIR: &str = "./bench_data/pcs";
-use std::env;
 
 #[derive(Debug)]
 struct P {}
@@ -89,6 +72,7 @@ where
         + InMemoryTranscript<Param = ()>,
 
 {
+    println!("RUNNING system={pcs} k={k}");
     let timer = start_timer(|| format!("PCS setup and trim -{k}"));
     let mut rng = OsRng;
     let poly_size = 1 << k;
@@ -99,7 +83,6 @@ where
 
 
     let timer = start_timer(|| format!("commit -{k}"));
-    let mut transcript = T::new(());
 
     let poly = MultilinearPolynomial::rand(k,OsRng);
 
@@ -107,17 +90,16 @@ where
 
     let mut commit_times = Vec::new();
     let mut times = Vec::new();
-    for i in 0..sample_size{
-
+    for _ in 0..sample_size{
 	let cstart = Instant::now();
+	let mut transcript = T::new(());
 	let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
-	
 	commit_times.push(cstart.elapsed());
 
 	let start = Instant::now();
 	let point = transcript.squeeze_challenges(k);
 	let eval = poly.evaluate(point.as_slice());
-	transcript.write_field_element(&eval).unwrap();	
+	transcript.write_field_element(&eval).unwrap();
 	Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
 	times.push(start.elapsed());
     }
@@ -130,13 +112,20 @@ where
     
     writeln!(&mut pcs.commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
     writeln!(&mut pcs.output(), "{k}, {}", avg.as_millis()).unwrap();    
-    
+
+    let mut transcript = T::new(());
+    let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
+    let point = transcript.squeeze_challenges(k);
+    let eval = poly.evaluate(point.as_slice());
+    transcript.write_field_element(&eval).unwrap();
+    Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
     let proof = transcript.into_proof();
 
 
 
 
     let timer = start_timer(|| format!("verify-{k}"));
+    println!("VERIFYING system={pcs} k={k}");
     let result = {
 	let mut transcript = T::from_proof((),proof.as_slice());
 	let mut start_size = 0;
@@ -245,7 +234,6 @@ impl System {
     fn bench(&self, k: usize) {
 	type Kzg = MultilinearKzg<Bn256>;
 	type Brakedown = MultilinearBrakedown<Fp, Keccak256, BrakedownSpec6>;
-	type Brakedown127 = MultilinearBrakedown<Fp, Blake2s, BrakedownSpec6>;	
 	type BrakedownBlake2s = MultilinearBrakedown<GoldilocksMont, Blake2s, BrakedownSpec1>;		
 
         match self {
@@ -305,10 +293,11 @@ fn parse_args() -> (Vec<System>, Range<usize>) {
         |(mut systems,  mut k_range), (key, value)| {
             match key.as_str() {
                 "--system" => match value.as_str() {
-                    "all" => systems = vec![System::BrakedownBlake2s,System::BasefoldBlake2s],
+                    "all" => systems = System::all(),
                     "basefold256" => systems.push(System::Basefold256),
-                    "multilinearkzg" => systems.push(System::MultilinearKzg),		               _ => panic!(
-                        "system should be one of {{all,hyperplonk,halo2,espresso_hyperplonk}}"
+                    "multilinearkzg" => systems.push(System::MultilinearKzg),
+                    _ => panic!(
+                        "system should be one of {{all, basefold256, multilinearkzg}}"
                     ),
                 },
                 "--k" => {
@@ -322,7 +311,7 @@ fn parse_args() -> (Vec<System>, Range<usize>) {
                 }
                 _ => {}
             }
-            (vec![System::Basefold256], k_range)
+            (systems, k_range)
         },
     );
 
@@ -361,13 +350,12 @@ fn sample<T>(system: System, k: usize, prove: impl Fn() -> T) -> T {
 }
 
 fn sample_size(k: usize) -> usize {
-    if k < 16 {
-        20
-    } else if k < 20 {
+    if k < 10 {
         5
+    } else if k < 16 {
+        2
     } else {
         1
     }
 
 }
-

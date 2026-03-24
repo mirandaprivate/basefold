@@ -24,7 +24,7 @@ mod vanilla_plonk {
             let pi = meta.instance_column();
             let [q_l, q_r, q_m, q_o, q_c] = [(); 5].map(|_| meta.fixed_column());
             let [w_l, w_r, w_o] = [(); 3].map(|_| meta.advice_column());
-            [w_l, w_r, w_o].map(|column| meta.enable_equality(column));
+            let _ = [w_l, w_r, w_o].map(|column| meta.enable_equality(column));
             meta.create_gate(
                 "q_l·w_l + q_r·w_r + q_m·w_l·w_r + q_o·w_o + q_c + pi = 0",
                 |meta| {
@@ -51,7 +51,10 @@ mod vanilla_plonk {
     }
 
     #[derive(Clone, Default)]
-    pub struct VanillaPlonk<F>(usize, Vec<[Assigned<F>; 8]>);
+    pub struct VanillaPlonk<F> {
+        _k: usize,
+        rows: Vec<[Assigned<F>; 8]>,
+    }
 
     impl<F: Field> Circuit<F> for VanillaPlonk<F> {
         type Config = VanillaPlonkConfig;
@@ -74,7 +77,7 @@ mod vanilla_plonk {
             layouter.assign_region(
                 || "",
                 |mut region| {
-                    for (offset, values) in self.1.iter().enumerate() {
+                    for (offset, values) in self.rows.iter().enumerate() {
                         let (selectors, wires) = values.split_at(config.selectors.len());
                         for (column, value) in
                             config.selectors.into_iter().zip(selectors.iter().copied())
@@ -113,11 +116,11 @@ mod vanilla_plonk {
                     .collect_vec(),
                 )
                 .collect();
-            Self(k, values)
+            Self { _k: k, rows: values }
         }
 
         fn instances(&self) -> Vec<Vec<F>> {
-            let [q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] = self.1[0];
+            let [q_l, q_r, q_m, q_o, q_c, w_l, w_r, w_o] = self.rows[0];
             let pi = (-(q_l * w_l + q_r * w_r + q_m * w_l * w_r + q_o * w_o + q_c)).evaluate();
             vec![vec![pi]]
         }

@@ -40,6 +40,10 @@ timer = ["plonkish_backend/timer", "halo2_proofs/print-trace", "espresso_subrout
 name = "blaze_bench"
 harness = false
 
+[[bench]]
+name = "pcs_bench"
+harness = false
+
 
 
 

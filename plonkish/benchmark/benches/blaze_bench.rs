@@ -1,61 +1,39 @@
-
 use plonkish_backend::util::binary_extension_fields::B128;
-use halo2_proofs::arithmetic::Field;
-use plonkish_backend::util::blaze_transcript::{BlazeBlake2sTranscript,BlazeFiatShamirTranscript};
-use plonkish_backend::util::transcript::{Blake2sTranscript,Blake2s256Transcript, Keccak256Transcript};
-use plonkish_backend::util::transcript::FieldTranscriptRead;
-use plonkish_backend::util::transcript::FieldTranscriptWrite;
-use plonkish_backend::util::transcript::{InMemoryTranscript, FieldTranscript, TranscriptRead, TranscriptWrite, FiatShamirTranscript};
+use plonkish_backend::util::blaze_transcript::BlazeBlake2sTranscript;
+use plonkish_backend::util::transcript::{
+    Blake2sTranscript, Blake2s256Transcript, InMemoryTranscript, Keccak256Transcript,
+    TranscriptRead, TranscriptWrite,
+};
 use itertools::chain;
-use plonkish_backend::pcs::multilinear::blaze::log2_strict;
 use plonkish_backend::pcs::Evaluation;
- use rand::Rng;
-
-use num_traits::Zero;
-
-use rand::{rngs::OsRng,SeedableRng};
-use benchmark::{
-    espresso,
-    halo2::{AggregationCircuit, Sha256Circuit},
-    BasefoldParams::*    
-};
-use rand_chacha::ChaCha8Rng;
-use halo2_proofs::{
-    plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
-    poly::kzg::{
-        commitment::ParamsKZG,
-        multiopen::{ProverGWC, VerifierGWC},
-        strategy::SingleStrategy,
-    }
-};
+use rand::Rng;
+use rand::rngs::OsRng;
+use benchmark::basefold_params::*;
 use itertools::Itertools;
 use plonkish_backend::{
-    poly::multilinear::{MultilinearPolynomial},
-    backend::{self, PlonkishBackend, PlonkishCircuit},
-    frontend::halo2::{circuit::VanillaPlonk, CircuitExt, Halo2Circuit},
-    halo2_curves::{bn256::{Bn256, Fr}, secp256k1::Fp},
-    pcs::{PolynomialCommitmentScheme, multilinear::{MultilinearKzg,Basefold,MultilinearBrakedown, ZeromorphFri, BasefoldExtParams, 
-        blaze::{BlazeCommitment, CommitmentChunk as BlazeCommitmentChunk, 
-            setup as blaze_setup, trim as blaze_trim, 
-            commit as blaze_commit, 
-            commit_and_write as blaze_commit_and_write,
-            open as blaze_open, 
-            verify as blaze_verify,
-            faster_open as blaze_faster_open, 
-            faster_verify as blaze_faster_verify
-        }
-        }, univariate::Fri},
+    poly::multilinear::MultilinearPolynomial,
+    halo2_curves::{
+        bn256::{Bn256, Fr},
+        secp256k1::Fp,
+    },
+    pcs::{
+        multilinear::{
+            blaze::{
+                setup as blaze_setup, trim as blaze_trim, BlazeCommitment,
+                CommitmentChunk as BlazeCommitmentChunk,
+            },
+            Basefold, BasefoldExtParams, MultilinearBrakedown, MultilinearKzg, ZeromorphFri,
+        },
+        univariate::Fri,
+        PolynomialCommitmentScheme,
+    },
     util::{
-        end_timer, start_timer,
-        test::std_rng,
-    hash::{Keccak256,Blake2s256,Blake2s, Hash},
-    arithmetic::{PrimeField,sum},
-    code::{BrakedownSpec6, BrakedownSpec1, BrakedownSpec3},
-    new_fields::{Mersenne127, Mersenne61},
-    avx_int_types::{BlazeField, u256::Blazeu256, u64::Blazeu64},
-    mersenne_61_mont::Mersenne61Mont,
-    ff_255::{ff255::Ft255, ft127::Ft127, ft63::Ft63},
-    goldilocksMont::GoldilocksMont
+        arithmetic::{Field, PrimeField},
+        avx_int_types::{u64::Blazeu64, BlazeField},
+        code::{BrakedownSpec1, BrakedownSpec3, BrakedownSpec6},
+        goldilocksMont::GoldilocksMont,
+        hash::{Blake2s, Blake2s256, Hash, Keccak256},
+        new_fields::Mersenne127,
     },
 };
 
@@ -70,9 +48,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BATCH_SIZE:usize = 64;
 const OUTPUT_DIR: &str = "./bench_data/pcs";
-use std::env;
 
 #[derive(Debug)]
 struct P {}
@@ -104,6 +80,16 @@ fn main() {
     k_range.for_each(|k| systems.iter().for_each(|system| system.bench(k)));
 }
 
+fn average_duration(samples: &[Duration]) -> Duration {
+    let window = if samples.len() > 2 {
+        &samples[2..]
+    } else {
+        samples
+    };
+    let sum = window.iter().copied().sum::<Duration>();
+    sum / window.len().max(1) as u32
+}
+
 fn bench_pcs<F, Pcs, T>(k: usize, pcs : System )
 where
    F: PrimeField,
@@ -131,7 +117,7 @@ where
 
     let mut commit_times = Vec::new();
     let mut times = Vec::new();
-    for i in 0..sample_size{
+    for _ in 0..sample_size{
           println!("commit");
        let cstart = Instant::now();
        let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
@@ -146,11 +132,8 @@ where
        Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
        times.push(start.elapsed());
     }
-    let sum = times[2..5].iter().sum::<Duration>();
-    let csum = commit_times[2..5].iter().sum::<Duration>();
-    
-    let avg = sum / 3 as u32;
-    let cavg = csum / 3 as u32;
+    let avg = average_duration(&times);
+    let cavg = average_duration(&commit_times);
 
     
     writeln!(&mut pcs.commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
@@ -160,10 +143,10 @@ where
 
 
     let mut end_size = 0;
-    while(transcript.read_commitment().is_ok()){
+    while transcript.read_commitment().is_ok() {
         end_size = end_size + 1;
     }
-    writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (end_size)*256);
+    let _ = writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (end_size) * 256);
 
     let proof = transcript.into_proof();
     //let timer = start_timer(|| format!("verify-{k}"));
@@ -171,11 +154,11 @@ where
 
 
     let mut verifier_times = Vec::new();
-    for i in 0..sample_size{
+    for _ in 0..sample_size{
         let proof = proof.clone();
         let mut transcript = T::from_proof((),proof.as_slice());
         let now = Instant::now();
-        let b = Pcs::verify(
+        let _ = Pcs::verify(
             &vp,
             &Pcs::read_commitment(&vp, &mut transcript).unwrap(),
             &transcript.squeeze_challenges(k),
@@ -183,8 +166,7 @@ where
             &mut transcript); 
        verifier_times.push(now.elapsed());
    }
-   let vsum = verifier_times[2..5].iter().sum::<Duration>();
-   let vavg = vsum / 3 as u32; 
+   let vavg = average_duration(&verifier_times); 
     writeln!(&mut pcs.verify_output(), "{:?}: {:?}", k, vavg.as_millis()).unwrap();
     //let mut end_size = 0;
     //while(transcript.read_commitment().is_ok()){
@@ -198,6 +180,7 @@ where
   //  assert_eq!(result,Ok(()));
 }
 
+#[allow(dead_code)]
 fn batch_bench_pcs<F, Pcs, T>(k: usize, batch_size:usize, pcs : System )
 where
    F: PrimeField,
@@ -223,7 +206,7 @@ where
 
     let param = Pcs::setup(poly_size, 1, &mut rng).unwrap();
 
-    let (pp,vp) = Pcs::trim(&param, poly_size, 1).unwrap();
+    let (pp, _vp) = Pcs::trim(&param, poly_size, 1).unwrap();
 
     let mut transcript = T::new(());
 
@@ -234,7 +217,7 @@ where
     let polys = iter::repeat_with(|| MultilinearPolynomial::rand(k, OsRng))
                     .take(batch_size)
                     .collect_vec();
-    for i in 0..sample_size{
+    for _ in 0..sample_size{
 
        let cstart = Instant::now();
        let comms = Pcs::batch_commit_and_write(&pp, &polys, &mut transcript).unwrap();
@@ -278,10 +261,10 @@ where
     
 
     let mut end_size = 0;
-    while(transcript.read_commitment().is_ok()){
+    while transcript.read_commitment().is_ok() {
         end_size = end_size + 1;
     }
-    writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (end_size)*256);
+    let _ = writeln!(&mut pcs.size_output(), "{:?} {:?} : {:?}", pcs, k, (end_size) * 256);
 
     //let timer = start_timer(|| format!("verify-{k}"));
     //let result = {
@@ -334,10 +317,9 @@ where
     let param = blaze_setup::<H>(poly_size, 2, &mut rng,Some(num_rows),Some(queries));
     let (pp,vp) = blaze_trim::<H>(&param, poly_size, 1);
 
-    let mut chacha = ChaCha8Rng::from_entropy();
     //creating a random matrix with 16 columns of 256-bit words                               
     let mut matrix = Vec::new();
-    for i in 0..num_rows{
+    for _ in 0..num_rows{
         matrix.push(F::rand_vec(poly_size as usize));
     }
 
@@ -347,9 +329,13 @@ where
     let mut times = Vec::new();
     let mut comm = BlazeCommitment::default();
     let mut point =  Vec::new();
-    for i in 0..sample_size{
+    for _ in 0..sample_size{
         let cstart = Instant::now();
-        comm = blaze_commit_and_write::<F,H>(&pp, &matrix,&mut blaze_transcript);
+        comm = plonkish_backend::pcs::multilinear::blaze::commit_and_write::<F, H>(
+            &pp,
+            &matrix,
+            &mut blaze_transcript,
+        );
         commit_times.push(cstart.elapsed());
    
      
@@ -357,14 +343,20 @@ where
       //  let eval = poly.evaluate(point.as_slice());
      //   b128_transcript.write_field_element(&eval).unwrap();  
         let start = Instant::now();
-        blaze_open(&pp, &matrix, &comm, &point, &B128::ZERO, &mut blaze_transcript,&mut b128_transcript).unwrap();
+        plonkish_backend::pcs::multilinear::blaze::open(
+            &pp,
+            &matrix,
+            &comm,
+            &point,
+            &B128::ZERO,
+            &mut blaze_transcript,
+            &mut b128_transcript,
+        )
+        .unwrap();
         times.push(start.elapsed());
     }
-    let sum = times[2..5].iter().sum::<Duration>();
-    let csum = commit_times[2..5].iter().sum::<Duration>();
-    
-    let avg = sum / 3 as u32;
-    let cavg = csum / 3 as u32;
+    let avg = average_duration(&times);
+    let cavg = average_duration(&commit_times);
 
     
     writeln!(&mut pcs.commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
@@ -378,13 +370,13 @@ where
 
 
     let mut verifier_times = Vec::new();
-    for i in 0..sample_size{
+    for _ in 0..sample_size{
         let blaze_proof = blaze_proof.clone();
         let b128_proof = b128_proof.clone();
         let mut blaze_transcript = T2::from_proof((),blaze_proof.as_slice());
         let mut b128_transcript  = T1::from_proof((),b128_proof.as_slice());
         let now = Instant::now();
-        let b = blaze_verify(
+        let _ = plonkish_backend::pcs::multilinear::blaze::verify(
             &vp,
             &comm,
             &point,
@@ -395,13 +387,13 @@ where
 
     }
 
-    let vsum = verifier_times[2..5].iter().sum::<Duration>();
-    let vavg = vsum / 3 as u32;
+    let vavg = average_duration(&verifier_times);
 
     writeln!(&mut pcs.verify_output(), "{:?}: {:?}", k, vavg.as_millis()).unwrap();
 }
 
 
+#[allow(dead_code)]
 fn bench_faster_blaze<F,H,T1,T2>(k: usize, pcs:System, log_rows:usize, queries:usize)
 where
    F: BlazeField,
@@ -423,10 +415,9 @@ where
     let param = blaze_setup::<H>(poly_size, 1, &mut rng,Some(num_rows),Some(queries));
     let (pp,vp) = blaze_trim::<H>(&param, poly_size, 1);
 
-    let mut chacha = ChaCha8Rng::from_entropy();
     //creating a random matrix with 16 columns of 256-bit words                               
     let mut matrix = Vec::new();
-    for i in 0..num_rows{
+    for _ in 0..num_rows{
         matrix.push(F::rand_vec(poly_size as usize));
     }
 
@@ -436,9 +427,13 @@ where
     let mut times = Vec::new();
     let mut comm = BlazeCommitment::default();
     let mut point =  Vec::new();
-    for i in 0..sample_size{
+    for _ in 0..sample_size{
         let cstart = Instant::now();
-        comm = blaze_commit_and_write::<F,H>(&pp, &matrix,&mut blaze_transcript);
+        comm = plonkish_backend::pcs::multilinear::blaze::commit_and_write::<F, H>(
+            &pp,
+            &matrix,
+            &mut blaze_transcript,
+        );
         commit_times.push(cstart.elapsed());
    
      
@@ -446,14 +441,20 @@ where
       //  let eval = poly.evaluate(point.as_slice());
      //   b128_transcript.write_field_element(&eval).unwrap();  
         let start = Instant::now();
-        blaze_faster_open(&pp, &matrix, &comm, &point, &B128::ZERO, &mut blaze_transcript,&mut b128_transcript).unwrap();
+        plonkish_backend::pcs::multilinear::blaze::faster_open(
+            &pp,
+            &matrix,
+            &comm,
+            &point,
+            &B128::ZERO,
+            &mut blaze_transcript,
+            &mut b128_transcript,
+        )
+        .unwrap();
         times.push(start.elapsed());
     }
-    let sum = times[2..5].iter().sum::<Duration>();
-    let csum = commit_times[2..5].iter().sum::<Duration>();
-    
-    let avg = sum / 3 as u32;
-    let cavg = csum / 3 as u32;
+    let avg = average_duration(&times);
+    let cavg = average_duration(&commit_times);
 
     
     writeln!(&mut pcs.commit_output(), "{k}, {}", cavg.as_millis()).unwrap();
@@ -467,13 +468,13 @@ where
 
 
     let mut verifier_times = Vec::new();
-    for i in 0..sample_size{
+    for _ in 0..sample_size{
         let blaze_proof = blaze_proof.clone();
         let b128_proof = b128_proof.clone();
         let mut blaze_transcript = T2::from_proof((),blaze_proof.as_slice());
         let mut b128_transcript  = T1::from_proof((),b128_proof.as_slice());
         let now = Instant::now();
-        let b = blaze_faster_verify(
+        let _ = plonkish_backend::pcs::multilinear::blaze::faster_verify(
             &vp,
             &comm,
             &point,
@@ -484,8 +485,7 @@ where
 
     }
 
-    let vsum = verifier_times[2..5].iter().sum::<Duration>();
-    let vavg = vsum / 3 as u32;
+    let vavg = average_duration(&verifier_times);
 
     writeln!(&mut pcs.verify_output(), "{:?}: {:?}", k, vavg.as_millis()).unwrap();
 }
@@ -567,6 +567,7 @@ impl System {
             .open(self.commit_output_path())
             .unwrap()
     }
+    #[allow(dead_code)]
     fn batch_commit_output(&self) -> File {
 
         OpenOptions::new()
@@ -575,6 +576,7 @@ impl System {
             .unwrap()
     }
 
+    #[allow(dead_code)]
     fn batch_open_output(&self) -> File {
 
         OpenOptions::new()
@@ -601,7 +603,6 @@ impl System {
     fn bench(&self, k: usize) {
     type Kzg = MultilinearKzg<Bn256>;
     type Brakedown = MultilinearBrakedown<Fp, Keccak256, BrakedownSpec6>;
-    type Brakedown127 = MultilinearBrakedown<Fp, Blake2s, BrakedownSpec6>;  
     type BrakedownBlake2s = MultilinearBrakedown<GoldilocksMont, Blake2s, BrakedownSpec1>;  
     type Brakedown1 = MultilinearBrakedown<Mersenne127, Blake2s, BrakedownSpec1>;
     type Brakedown3 = MultilinearBrakedown<Mersenne127, Blake2s, BrakedownSpec3>;
@@ -724,7 +725,7 @@ fn parse_args() -> (Vec<System>, Range<usize>) {
         |(mut systems,  mut k_range), (key, value)| {
             match key.as_str() {
                 "--system" => match value.as_str() {
-                    "all" => systems = vec![System::BrakedownBlake2s],
+                    "all" => systems = System::all(),
                     "basefold256" => systems.push(System::Basefold256),
                     "multilinearkzg" => systems.push(System::MultilinearKzg),                      _ => panic!(
                         "system should be one of {{all,hyperplonk,halo2,espresso_hyperplonk}}"
@@ -741,7 +742,7 @@ fn parse_args() -> (Vec<System>, Range<usize>) {
                 }
                 _ => {}
             }
-            (vec![System::Blaze64,/* System::BasefoldFri2 ,System::BasefoldFri2, System::BasefoldFri4, System::BasefoldFri8, System::Brakedown1, System::Brakedown3, System::Brakedown6*/], k_range)
+            (systems, k_range)
         },
     );
 
@@ -766,6 +767,7 @@ fn create_output(systems: &[System]) {
     }
 }
 
+#[allow(dead_code)]
 fn sample<T>(system: System, k: usize, prove: impl Fn() -> T) -> T {
     let mut proof = None;
     let sample_size = sample_size(k);
@@ -781,8 +783,7 @@ fn sample<T>(system: System, k: usize, prove: impl Fn() -> T) -> T {
     proof.unwrap()
 }
 
-fn sample_size(k: usize) -> usize {
-    5
+fn sample_size(_k: usize) -> usize {
+    1
 
 }
-

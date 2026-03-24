@@ -1,88 +1,80 @@
-use crate::pcs::multilinear::basefold::{
-    build_eq_x_r_vec, sum_check_challenge_round, sum_check_first_round,
+use std::{
+    array::IntoIter,
+    borrow::Cow,
+    collections::HashMap,
+    iter,
+    iter::Chain,
+    marker::PhantomData,
+    mem::size_of,
+    ops::Deref,
+    simd::i8x2,
+    slice,
+    time::{Duration, Instant},
 };
-use crate::pcs::multilinear::basefold::{
-    multilinear_evaluation_ztoa, BasefoldParams, BasefoldProverParams, BasefoldVerifierParams,
-};
-use crate::pcs::multilinear::Basefold;
-use crate::pcs::multilinear::BasefoldCommitment;
-use crate::util::blaze_transcript::BlazeBlake2sTranscript;
-use crate::util::code::encode_bits_ser;
-use crate::util::transcript::Blake2sTranscript;
-use crate::util::transcript::FieldTranscriptRead;
-use crate::util::transcript::FieldTranscriptWrite;
-use crate::util::transcript::{
-    FieldTranscript, InMemoryTranscript, TranscriptRead, TranscriptWrite,
-};
-use itertools::chain;
-use num_traits::Zero;
-use std::array::IntoIter;
-use std::iter::Chain;
 
-use crate::util::code::{repetition_code_long, serial_accumulator_long};
-use crate::util::hash::Blake2s;
+// use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+use core::{fmt::Debug, ptr::addr_of};
+// use ctr;
+use ff::BatchInverter;
+use generic_array::GenericArray;
+use halo2_curves::bn256::{Bn256, Fr};
+use itertools::{chain, izip};
+use num_traits::Zero;
+use plonky2_util::{reverse_bits, reverse_index_bits_in_place};
+use rand::rngs::OsRng;
+use rand_chacha::{
+    rand_core::{RngCore, SeedableRng},
+    ChaCha12Rng, ChaCha8Rng,
+};
+use rayon::{
+    current_num_threads,
+    iter::IntoParallelIterator,
+    prelude::{
+        IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
+        ParallelIterator, ParallelSlice, ParallelSliceMut,
+    },
+};
 
 use crate::backend::hyperplonk::prover::permutation_z_polys;
-use crate::pcs::multilinear::BasefoldExtParams;
-use crate::util::binary_extension_fields::B128;
-
-//use crate::util::test::rand_vec;
-use crate::util::avx_int_types::{u64::Blazeu64, BlazeField};
-use crate::util::{hash::Keccak256, avx_int_types::u64};
-use rand::rngs::OsRng;
-
-use crate::pcs::Commitment;
 use crate::piop::sum_check::{
     classic::{ClassicSumCheck, CoefficientsProver},
     eq_xy_eval, SumCheck as _, VirtualPolynomial,
 };
+use crate::pcs::Commitment;
+use crate::pcs::multilinear::basefold::{
+    build_eq_x_r_vec, multilinear_evaluation_ztoa, sum_check_challenge_round,
+    sum_check_first_round, BasefoldParams, BasefoldProverParams, BasefoldVerifierParams,
+    Type1Polynomial, Type2Polynomial,
+};
+use crate::pcs::multilinear::{additive, validate_input, Basefold, BasefoldCommitment, BasefoldExtParams};
+use crate::util::avx_int_types::{u64::Blazeu64, BlazeField};
+use crate::util::binary_extension_fields::B128;
+use crate::util::blaze_transcript::BlazeBlake2sTranscript;
+use crate::util::code::{repetition_code_long, serial_accumulator_long};
+use crate::util::hash::Blake2s;
+use crate::util::transcript::{
+    Blake2sTranscript, FieldTranscript, FieldTranscriptRead, FieldTranscriptWrite,
+    InMemoryTranscript, TranscriptRead, TranscriptWrite,
+};
 
 use crate::{
-    pcs::{
-        multilinear::{
-            additive,
-            basefold::{Type1Polynomial, Type2Polynomial},
-            validate_input,
-        },
-        AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme,
-    },
+    pcs::{AdditiveCommitment, Evaluation, Point, PolynomialCommitmentScheme},
     poly::{multilinear::MultilinearPolynomial, Polynomial},
     util::{
         arithmetic::{div_ceil, horner, inner_product, steps, BatchInvert, Field, PrimeField},
-        code::{encode_bits, encode_bits_long, Brakedown, BrakedownSpec, LinearCodes, Permutation},
+        avx_int_types::u64,
+        code::{
+            encode_bits, encode_bits_long, encode_bits_ser, Brakedown, BrakedownSpec, LinearCodes,
+            Permutation,
+        },
         expression::{Expression, Query, Rotation},
-        hash::{Hash, Output},
+        hash::{Hash, Keccak256, Output},
         new_fields::{Mersenne127, Mersenne61},
         parallel::{num_threads, parallelize, parallelize_iter},
         BigUint, Deserialize, DeserializeOwned, Itertools, Serialize,
     },
     Error,
 };
-use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
-use core::fmt::Debug;
-use core::ptr::addr_of;
-use ctr;
-use ff::BatchInverter;
-use generic_array::GenericArray;
-use halo2_curves::bn256::{Bn256, Fr};
-use itertools::izip;
-
-use rayon::iter::IntoParallelIterator;
-use std::simd::i8x2;
-use std::time::Duration;
-use std::{collections::HashMap, iter, ops::Deref, time::Instant};
-
-use plonky2_util::{reverse_bits, reverse_index_bits_in_place};
-use rand_chacha::{
-    rand_core::{RngCore, SeedableRng},
-    ChaCha12Rng, ChaCha8Rng,
-};
-use rayon::current_num_threads;
-use rayon::prelude::{
-    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
-    ParallelSlice, ParallelSliceMut,
-};
-use std::{borrow::Cow, marker::PhantomData, mem::size_of, slice};
 
 pub type CommitmentChunk<H: Hash> = Output<H>;
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -2494,7 +2494,8 @@ fn verifier_query_phase<F: PrimeField, H: Hash>(
 ) -> Vec<usize> {
     println!("VERIFIER QUERY PHASE");
     println!("CHALLEGNES LENGTH {:?}", query_challenges.len());
-    assert_eq!(query_challenges.len(), 1);
+    assert_eq!(query_challenges.len(), queries.len());
+    assert_eq!(query_challenges.len(), query_merkle_paths.len());
     let n = (1 << (num_vars + log_rate));
     let mut queries_usize: Vec<usize> = query_challenges
         .par_iter()
@@ -2790,4 +2791,3 @@ pub fn get_table_additive_binary<F: PrimeField>(
 
     return (unflattened_table_w_weights, unflattened_table);
 }
-
