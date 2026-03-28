@@ -64,8 +64,8 @@ use crate::{
         arithmetic::{div_ceil, horner, inner_product, steps, BatchInvert, Field, PrimeField},
         avx_int_types::u64,
         code::{
-            encode_bits, encode_bits_long, encode_bits_ser, Brakedown, BrakedownSpec, LinearCodes,
-            Permutation,
+            encode_bits, encode_bits_long, encode_bits_ser, encode_bits_ser_with_timings,
+            Brakedown, BrakedownSpec, LinearCodes, Permutation, RaaEncodeTimings,
         },
         expression::{Expression, Query, Rotation},
         hash::{Hash, Keccak256, Output},
@@ -77,6 +77,33 @@ use crate::{
 };
 
 pub type CommitmentChunk<H: Hash> = Output<H>;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BlazeCommitAndWriteTimings {
+    pub raa_repeat_interleave: Duration,
+    pub raa_first_accumulate: Duration,
+    pub raa_second_interleave: Duration,
+    pub raa_second_accumulate: Duration,
+    pub raa_third_interleave: Duration,
+    pub raa_third_accumulate: Duration,
+    pub raa_total: Duration,
+    pub merkle: Duration,
+    pub transcript_write: Duration,
+    pub total: Duration,
+}
+
+impl BlazeCommitAndWriteTimings {
+    fn add_raa_timings(&mut self, timings: RaaEncodeTimings) {
+        self.raa_repeat_interleave += timings.repeat_interleave;
+        self.raa_first_accumulate += timings.first_accumulate;
+        self.raa_second_interleave += timings.second_interleave;
+        self.raa_second_accumulate += timings.second_accumulate;
+        self.raa_third_interleave += timings.third_interleave;
+        self.raa_third_accumulate += timings.third_accumulate;
+        self.raa_total += timings.total;
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlazeParams {
     permutation: Permutation,
@@ -398,11 +425,20 @@ pub fn commit_and_write<F: BlazeField, H: Hash>(
     word: &Vec<Vec<F>>,
     transcript: &mut impl TranscriptWrite<CommitmentChunk<H>, F>,
 ) -> BlazeCommitment<F, H> {
-    let now = Instant::now();
-    let codeword: Vec<Vec<F>> = word
+    commit_and_write_with_timings(pp, word, transcript).0
+}
+
+pub fn commit_and_write_with_timings<F: BlazeField, H: Hash>(
+    pp: &BlazeProverParam,
+    word: &Vec<Vec<F>>,
+    transcript: &mut impl TranscriptWrite<CommitmentChunk<H>, F>,
+) -> (BlazeCommitment<F, H>, BlazeCommitAndWriteTimings) {
+    let total_start = Instant::now();
+    let encode_start = Instant::now();
+    let encoded_rows: Vec<(Vec<F>, RaaEncodeTimings)> = word
         .par_iter()
         .map(|w| {
-            encode_bits_ser(
+            encode_bits_ser_with_timings(
                 //TODO - do this with two distinct permutations
                 w.to_vec(),
                 &pp.permutation,
@@ -410,28 +446,37 @@ pub fn commit_and_write<F: BlazeField, H: Hash>(
             )
         })
         .collect();
-    println!(
-        "degree {:?}, raa encode time {:?}",
-        pp.num_vars,
-        now.elapsed()
-    );
+    let mut timings = BlazeCommitAndWriteTimings::default();
 
-    //   println!("encode time {:?}", now.elapsed());
-    let now = Instant::now();
+    let codeword: Vec<Vec<F>> = encoded_rows
+        .into_iter()
+        .map(|(row, row_timings)| {
+            timings.add_raa_timings(row_timings);
+            row
+        })
+        .collect();
+    let raa_encode_wall = encode_start.elapsed();
+    println!("degree {:?}, raa encode time {:?}", pp.num_vars, raa_encode_wall);
+
+    let merkle_start = Instant::now();
     let tree = merkelize_long::<H, F>(&codeword);
-    println!(
-        "degree {:?}, raa merkle time {:?}",
-        pp.num_vars,
-        now.elapsed()
-    );
+    timings.merkle = merkle_start.elapsed();
+    println!("degree {:?}, raa merkle time {:?}", pp.num_vars, timings.merkle);
 
+    let transcript_start = Instant::now();
     transcript.write_commitment(&tree[tree.len() - 1][0]);
+    timings.transcript_write = transcript_start.elapsed();
     println!("one commitment written");
-    BlazeCommitment {
-        codeword,
-        codeword_tree: tree,
-        bh_evals: word.to_vec(),
-    }
+    timings.total = total_start.elapsed();
+
+    (
+        BlazeCommitment {
+            codeword,
+            codeword_tree: tree,
+            bh_evals: word.to_vec(),
+        },
+        timings,
+    )
 }
 
 struct BlazeProof<F: BlazeField> {

@@ -51,15 +51,41 @@ fn print_bench_summary(
     pcs: System,
     log_per_row: usize,
     log_rows: usize,
+    num_rows: usize,
+    poly_size: usize,
+    queries: usize,
+    sample_size: usize,
+    raa_repeat_interleave: Duration,
+    raa_first_accumulate: Duration,
+    raa_second_interleave: Duration,
+    raa_second_accumulate: Duration,
+    raa_third_interleave: Duration,
+    raa_third_accumulate: Duration,
+    raa_total: Duration,
+    merkle: Duration,
+    transcript_write: Duration,
     commit: Duration,
     prove: Duration,
     verify: Duration,
 ) {
     println!(
-        "pcs={} log_per_row={} log_rows={} commit_ms={} prove_ms={} verify_ms={}",
+        "pcs={} log_per_row={} log_rows={} num_rows={} poly_size={} queries={} sample_size={} raa_repeat_interleave_ms={} raa_first_accumulate_ms={} raa_second_interleave_ms={} raa_second_accumulate_ms={} raa_third_interleave_ms={} raa_third_accumulate_ms={} raa_total_ms={} merkle_ms={} transcript_write_ms={} commit_ms={} prove_ms={} verify_ms={}",
         pcs,
         log_per_row,
         log_rows,
+        num_rows,
+        poly_size,
+        queries,
+        sample_size,
+        raa_repeat_interleave.as_millis(),
+        raa_first_accumulate.as_millis(),
+        raa_second_interleave.as_millis(),
+        raa_second_accumulate.as_millis(),
+        raa_third_interleave.as_millis(),
+        raa_third_accumulate.as_millis(),
+        raa_total.as_millis(),
+        merkle.as_millis(),
+        transcript_write.as_millis(),
         commit.as_millis(),
         prove.as_millis(),
         verify.as_millis()
@@ -92,16 +118,46 @@ where
         .collect::<Vec<_>>();
 
     let sample_size = sample_size(log_per_row);
+    println!(
+        "bench_start pcs={} log_per_row={} log_rows={} num_rows={} poly_size={} queries={} sample_size={}",
+        pcs,
+        log_per_row,
+        log_rows,
+        num_rows,
+        poly_size,
+        queries,
+        sample_size
+    );
 
     let mut commit_times = Vec::new();
     let mut prove_times = Vec::new();
+    let mut commit_timing_samples = Vec::new();
     let mut comm = BlazeCommitment::default();
     let mut point = Vec::new();
 
-    for _ in 0..sample_size {
+    for sample_idx in 0..sample_size {
         let commit_start = Instant::now();
-        comm = blaze::commit_and_write::<F, H>(&pp, &matrix, &mut blaze_transcript);
-        commit_times.push(commit_start.elapsed());
+        let (new_comm, commit_timings) =
+            blaze::commit_and_write_with_timings::<F, H>(&pp, &matrix, &mut blaze_transcript);
+        comm = new_comm;
+        let commit_elapsed = commit_start.elapsed();
+        commit_times.push(commit_elapsed);
+        commit_timing_samples.push(commit_timings);
+        println!(
+            "bench_sample pcs={} sample={} phase=commit elapsed_ms={} raa_repeat_interleave_ms={} raa_first_accumulate_ms={} raa_second_interleave_ms={} raa_second_accumulate_ms={} raa_third_interleave_ms={} raa_third_accumulate_ms={} raa_total_ms={} merkle_ms={} transcript_write_ms={}",
+            pcs,
+            sample_idx,
+            commit_elapsed.as_millis(),
+            commit_timings.raa_repeat_interleave.as_millis(),
+            commit_timings.raa_first_accumulate.as_millis(),
+            commit_timings.raa_second_interleave.as_millis(),
+            commit_timings.raa_second_accumulate.as_millis(),
+            commit_timings.raa_third_interleave.as_millis(),
+            commit_timings.raa_third_accumulate.as_millis(),
+            commit_timings.raa_total.as_millis(),
+            commit_timings.merkle.as_millis(),
+            commit_timings.transcript_write.as_millis()
+        );
 
         point = b128_transcript.squeeze_challenges(log_per_row);
         let prove_start = Instant::now();
@@ -115,11 +171,72 @@ where
             &mut b128_transcript,
         )
         .unwrap();
-        prove_times.push(prove_start.elapsed());
+        let prove_elapsed = prove_start.elapsed();
+        prove_times.push(prove_elapsed);
+        println!(
+            "bench_sample pcs={} sample={} phase=prove elapsed_ms={}",
+            pcs,
+            sample_idx,
+            prove_elapsed.as_millis()
+        );
     }
 
     let commit_avg = average_duration(&commit_times);
     let prove_avg = average_duration(&prove_times);
+    let raa_repeat_interleave_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.raa_repeat_interleave)
+            .collect::<Vec<_>>(),
+    );
+    let raa_first_accumulate_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.raa_first_accumulate)
+            .collect::<Vec<_>>(),
+    );
+    let raa_second_interleave_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.raa_second_interleave)
+            .collect::<Vec<_>>(),
+    );
+    let raa_second_accumulate_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.raa_second_accumulate)
+            .collect::<Vec<_>>(),
+    );
+    let raa_third_interleave_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.raa_third_interleave)
+            .collect::<Vec<_>>(),
+    );
+    let raa_third_accumulate_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.raa_third_accumulate)
+            .collect::<Vec<_>>(),
+    );
+    let raa_total_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.raa_total)
+            .collect::<Vec<_>>(),
+    );
+    let merkle_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.merkle)
+            .collect::<Vec<_>>(),
+    );
+    let transcript_write_avg = average_duration(
+        &commit_timing_samples
+            .iter()
+            .map(|t| t.transcript_write)
+            .collect::<Vec<_>>(),
+    );
 
     writeln!(&mut pcs.commit_output(), "{log_per_row}, {}", commit_avg.as_millis()).unwrap();
     writeln!(&mut pcs.output(), "{log_per_row}, {}", prove_avg.as_millis()).unwrap();
@@ -128,7 +245,7 @@ where
     let b128_proof = b128_transcript.into_proof();
 
     let mut verify_times = Vec::new();
-    for _ in 0..sample_size {
+    for sample_idx in 0..sample_size {
         let blaze_proof = blaze_proof.clone();
         let b128_proof = b128_proof.clone();
         let mut blaze_transcript = T2::from_proof((), blaze_proof.as_slice());
@@ -142,11 +259,38 @@ where
             &mut b128_transcript,
             &mut blaze_transcript,
         );
-        verify_times.push(verify_start.elapsed());
+        let verify_elapsed = verify_start.elapsed();
+        verify_times.push(verify_elapsed);
+        println!(
+            "bench_sample pcs={} sample={} phase=verify elapsed_ms={}",
+            pcs,
+            sample_idx,
+            verify_elapsed.as_millis()
+        );
     }
 
     let verify_avg = average_duration(&verify_times);
-    print_bench_summary(pcs, log_per_row, log_rows, commit_avg, prove_avg, verify_avg);
+    print_bench_summary(
+        pcs,
+        log_per_row,
+        log_rows,
+        num_rows,
+        poly_size,
+        queries,
+        sample_size,
+        raa_repeat_interleave_avg,
+        raa_first_accumulate_avg,
+        raa_second_interleave_avg,
+        raa_second_accumulate_avg,
+        raa_third_interleave_avg,
+        raa_third_accumulate_avg,
+        raa_total_avg,
+        merkle_avg,
+        transcript_write_avg,
+        commit_avg,
+        prove_avg,
+        verify_avg,
+    );
 
     writeln!(&mut pcs.verify_output(), "{:?}: {:?}", log_per_row, verify_avg.as_millis()).unwrap();
 }

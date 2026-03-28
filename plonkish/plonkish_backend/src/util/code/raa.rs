@@ -328,27 +328,70 @@ fn test_accumulator_performance() {
     // compare_accumulators(30);
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RaaEncodeTimings {
+    pub repeat_interleave: Duration,
+    pub first_accumulate: Duration,
+    pub second_interleave: Duration,
+    pub second_accumulate: Duration,
+    pub third_interleave: Duration,
+    pub third_accumulate: Duration,
+    pub total: Duration,
+}
+
+impl RaaEncodeTimings {
+    fn finalize(mut self) -> Self {
+        self.total = self.repeat_interleave
+            + self.first_accumulate
+            + self.second_interleave
+            + self.second_accumulate;
+        self.total += self.third_interleave + self.third_accumulate;
+        self
+    }
+}
+
+pub fn encode_bits_with_timings<F:BlazeField>(
+    message: Vec<F>,
+    p1: &Permutation,
+    rate: usize,
+) -> (Vec<F>, RaaEncodeTimings) {
+    let x = message.len();
+    let mut timings = RaaEncodeTimings::default();
+
+    let now = Instant::now();
+    let mut first_round = p1.repeat_interleave(message, rate); // Repeat and interleave.
+    timings.repeat_interleave = now.elapsed();
+
+    assert_eq!(first_round.len(),x*rate);
+
+    let now = Instant::now();
+    serial_accumulator(&mut first_round); // Accumulate
+    timings.first_accumulate = now.elapsed();
+
+    assert_eq!(first_round.len(),x*rate);
+
+    let now = Instant::now();
+    let mut second_round = p1.interleave2(first_round); // Interleave
+    timings.second_interleave = now.elapsed();
+
+    assert_eq!(second_round.len(),x*rate);
+
+    let now = Instant::now();
+    serial_accumulator(&mut second_round); // Accumulate
+    timings.second_accumulate = now.elapsed();
+
+    (second_round, timings.finalize())
+}
+
 pub fn encode_bits<F:BlazeField>(
     message: Vec<F>,
     p1: &Permutation,
     rate: usize,
     mut timer: &mut Duration,
 ) -> Vec<F> {
-
-    let x = message.len();
-    let mut first_round = p1.repeat_interleave(message, rate); // Repeat and interleave.
-
-    assert_eq!(first_round.len(),x*rate);
-    serial_accumulator(&mut first_round); // Accumulate
-    assert_eq!(first_round.len(),x*rate);
-    let mut second_round = p1.interleave2(first_round); // Interleave
-    assert_eq!(second_round.len(),x*rate);
-
-    serial_accumulator(&mut second_round); // Accumulate
-
-
-
-    second_round
+    let (codeword, timings) = encode_bits_with_timings(message, p1, rate);
+    *timer += timings.total;
+    codeword
 }
 
 pub fn encode_bits_ser<F:BlazeField>(
@@ -356,25 +399,53 @@ pub fn encode_bits_ser<F:BlazeField>(
     p: &Permutation,
     rate: usize
 ) -> Vec<F> {
+    encode_bits_ser_with_timings(message, p, rate).0
+}
+
+pub fn encode_bits_ser_with_timings<F:BlazeField>(
+    message: Vec<F>,
+    p: &Permutation,
+    rate: usize
+) -> (Vec<F>, RaaEncodeTimings) {
+    let mut timings = RaaEncodeTimings::default();
+
+    let now = Instant::now();
     let mut first_round = p.repeat_interleave(message, rate); // Repeat and interleave.
+    timings.repeat_interleave = now.elapsed();
+
+    let now = Instant::now();
     if first_round.len() >= 8 {
         parallel_accumulator(&mut first_round);
     } else {
         serial_accumulator(&mut first_round);
     }
+    timings.first_accumulate = now.elapsed();
+
+    let now = Instant::now();
     let mut second_round = p.interleave2(first_round); // Interleave
+    timings.second_interleave = now.elapsed();
+
+    let now = Instant::now();
     if second_round.len() >= 8 {
         parallel_accumulator(&mut second_round);
     } else {
         serial_accumulator(&mut second_round);
     }
+    timings.second_accumulate = now.elapsed();
+
+    let now = Instant::now();
     let mut third_round = p.interleave3(second_round);
+    timings.third_interleave = now.elapsed();
+
+    let now = Instant::now();
     if third_round.len() >= 8 {
         parallel_accumulator(&mut third_round);
     } else {
         serial_accumulator(&mut third_round);
     }
-    third_round
+    timings.third_accumulate = now.elapsed();
+
+    (third_round, timings.finalize())
 }
 pub fn encode_bits_long<F:BlazeField>(
     message: &Vec<Vec<F>>,
@@ -414,8 +485,16 @@ fn test_encode_bits(k: usize) {
         test_message64.push(Blazeu64{value:i});
     }
     let mut timer = Duration::new(0, 0);
-    let codeword = encode_bits(test_message64, &p1, 4, &mut timer);
-    println!("Encoding time for one message 64: {:?}", timer)
+    let (_codeword, timings) = encode_bits_with_timings(test_message64, &p1, 4);
+    timer += timings.total;
+    println!(
+        "Encoding time for one message 64: total {:?}, repeat_interleave {:?}, first_accumulate {:?}, interleave {:?}, second_accumulate {:?}",
+        timings.total,
+        timings.repeat_interleave,
+        timings.first_accumulate,
+        timings.second_interleave,
+        timings.second_accumulate
+    )
 }
 
 fn test_encode_bits_long_64(k: usize, col_size: usize) {
@@ -448,8 +527,16 @@ fn test_encode_bits512(k: usize) {
     // Encode one test message.
     let mut test_message512 = Blazeu512::rand_vec(1 << (k - 2));
     let mut timer = Duration::new(0, 0);
-    let codeword = encode_bits(test_message512, &p1, 4, &mut timer);
-    println!("Encoding time for one message 512: {:?}", timer)
+    let (_codeword, timings) = encode_bits_with_timings(test_message512, &p1, 4);
+    timer += timings.total;
+    println!(
+        "Encoding time for one message 512: total {:?}, repeat_interleave {:?}, first_accumulate {:?}, interleave {:?}, second_accumulate {:?}",
+        timings.total,
+        timings.repeat_interleave,
+        timings.first_accumulate,
+        timings.second_interleave,
+        timings.second_accumulate
+    )
 }
 
 fn test_encode_bits256(k: usize) {
@@ -463,8 +550,16 @@ fn test_encode_bits256(k: usize) {
     // Encode one test message.
     let mut test_message256 = Blazeu256::rand_vec(1 << (k - 2));
     let mut timer = Duration::new(0, 0);
-    let codeword = encode_bits(test_message256, &p1, 4, &mut timer);
-    println!("Encoding time for one message 256: {:?}", timer)
+    let (_codeword, timings) = encode_bits_with_timings(test_message256, &p1, 4);
+    timer += timings.total;
+    println!(
+        "Encoding time for one message 256: total {:?}, repeat_interleave {:?}, first_accumulate {:?}, interleave {:?}, second_accumulate {:?}",
+        timings.total,
+        timings.repeat_interleave,
+        timings.first_accumulate,
+        timings.second_interleave,
+        timings.second_accumulate
+    )
 }
 
 fn test_encode_bits64x8(k: usize) {
@@ -478,8 +573,16 @@ fn test_encode_bits64x8(k: usize) {
     // Encode one test message.
     let mut test_message512 = Blazeu64x8::rand_vec(1 << (k - 2));
     let mut timer = Duration::new(0, 0);
-    let codeword = encode_bits(test_message512, &p1, 4, &mut timer);
-    println!("Encoding time for one message 64x8: {:?}", timer)
+    let (_codeword, timings) = encode_bits_with_timings(test_message512, &p1, 4);
+    timer += timings.total;
+    println!(
+        "Encoding time for one message 64x8: total {:?}, repeat_interleave {:?}, first_accumulate {:?}, interleave {:?}, second_accumulate {:?}",
+        timings.total,
+        timings.repeat_interleave,
+        timings.first_accumulate,
+        timings.second_interleave,
+        timings.second_accumulate
+    )
 }
 
 #[test]
