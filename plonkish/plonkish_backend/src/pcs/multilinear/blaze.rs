@@ -635,7 +635,11 @@ pub fn open<F: BlazeField, H: Hash>(
     );
     //batch commit to folded_poly_b128, u1,u2,u3,u4,u5
     let now = Instant::now();
-    
+    println!(
+        "[basefold commit start] stage=raa_intermediates polys={} num_vars={}",
+        split_polys.len(),
+        pp.split_basefold_prover_param.num_vars
+    );
     let raa_commitments: Vec<BasefoldCommitment<B128, H>> = Pcs::batch_commit_and_write(
         &pp.split_basefold_prover_param,
         &split_polys,
@@ -643,7 +647,11 @@ pub fn open<F: BlazeField, H: Hash>(
     )
     .unwrap(); //ONE TRNASCRIPT WRITE
 
-    println!("commitments {:?}", now.elapsed());
+    println!(
+        "[basefold commit end] stage=raa_intermediates commitments={} elapsed={:?}",
+        raa_commitments.len(),
+        now.elapsed()
+    );
 
     let now = Instant::now();
     let (alpha, beta) = (
@@ -675,13 +683,22 @@ pub fn open<F: BlazeField, H: Hash>(
     assert_eq!(split_binding.len(), binding.len() * (1 << pp.log_num_chunks));
     println!("build perms {:?}", now.elapsed());
     let now = Instant::now();
+    println!(
+        "[basefold commit start] stage=permutation polys={} num_vars={}",
+        split_binding.len(),
+        pp.split_basefold_prover_param.num_vars
+    );
     let perm_commitments: Vec<BasefoldCommitment<B128, H>> = Pcs::batch_commit_and_write(
         &pp.split_basefold_prover_param,
         &split_binding, 
         b128transcript,
     )
     .unwrap(); //TWO TRANSCRIPT WRITES
-    println!("perm batch commitments {:?}", now.elapsed());
+    println!(
+        "[basefold commit end] stage=permutation commitments={} elapsed={:?}",
+        perm_commitments.len(),
+        now.elapsed()
+    );
 
     let rand_point = b128transcript.squeeze_challenges(pp.reg_basefold_prover_param.num_vars);
 
@@ -768,6 +785,13 @@ pub fn open<F: BlazeField, H: Hash>(
 
     let now = Instant::now();
     //now do batch opening THIS IS A TRANSCRIPT WRITE
+    println!(
+        "[basefold open start] polys={} commitments={} points={} evals={}",
+        polys.len(),
+        polys.len(),
+        points.len(),
+        evals_al.len()
+    );
     Pcs::batch_open(
         &pp.split_basefold_prover_param,
         &polys,
@@ -777,7 +801,10 @@ pub fn open<F: BlazeField, H: Hash>(
         b128transcript,
     );
 
-    println!("batch open time {:?}", now.elapsed());
+    println!(
+        "[basefold open end] elapsed={:?}",
+        now.elapsed()
+    );
 
     //query commitment merkle tree and write to transcript
     let mut queries = b128transcript.squeeze_challenges(pp.num_queries); //ned to fix this, it only works for prime fields
