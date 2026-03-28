@@ -14,6 +14,10 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use std::collections::HashMap;
 
+fn log_raa_fn_time(name: &str, elapsed: Duration) {
+    println!("raa_fn {} {:?}", name, elapsed);
+}
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Permutation{
@@ -28,15 +32,19 @@ impl Permutation{
     // where permutation[i] = j means that the element vector[i] should
     // be mapped to position j after permuting.
     pub fn create(mut rng: &mut ChaCha8Rng, length: usize) -> Self {
+        let now = Instant::now();
         let permutation1 = Self::get_permutation(&mut rng, length);
         let permutation2 = Self::get_permutation(&mut rng, length);
         let permutation3 = Self::get_permutation(&mut rng, length);
         let puncturing = Self::get_puncturing(&mut rng, length);
         assert_eq!(puncturing.len(), length >> 1);
-        Self{ permutation1, permutation2, permutation3, puncturing  }
+        let result = Self{ permutation1, permutation2, permutation3, puncturing  };
+        log_raa_fn_time("Permutation::create", now.elapsed());
+        result
     }
 
     pub fn get_permutation(mut rng:&mut ChaCha8Rng, length:usize) -> Vec<usize>{
+        let now = Instant::now();
          let mut permutation = Vec::with_capacity(length);
 
         // Create vector of all indices 0,1,...,length-1.
@@ -54,40 +62,49 @@ impl Permutation{
             rem.swap_remove(j as usize);
             i = i + 1;
         }
+        log_raa_fn_time("Permutation::get_permutation", now.elapsed());
         permutation
     }
 
     pub fn get_puncturing(mut rng:&mut ChaCha8Rng, length:usize) -> HashMap<usize,bool>{
+        let now = Instant::now();
         let indices = (0..length).choose_multiple(rng, length >> 1);
         let mut res = HashMap::new();
         for i in indices{
             res.insert(i,true);
         }
+        log_raa_fn_time("Permutation::get_puncturing", now.elapsed());
         return res;
     }
 
     // Applies permutation to input vector and then punctures.
     fn interleave2<F:BlazeField>(&self, input: Vec<F>) -> Vec<F> {
+        let now = Instant::now();
         let mut new_input = vec![F::zero(); input.len()];
         new_input.par_iter_mut().enumerate().for_each(|(i, mut x)| {
             let mut j = self.permutation2[i];
             *x = input[j];
         });
+        log_raa_fn_time("Permutation::interleave2", now.elapsed());
         new_input 
     }
 
     fn interleave3<F:BlazeField>(&self, input: Vec<F>) -> Vec<F> {
+        let now = Instant::now();
         let mut new_input = vec![F::zero(); input.len()];
         new_input.par_iter_mut().enumerate().for_each(|(i, mut x)| {
             let mut j = self.permutation3[i];
             *x = input[j];
         });
+        log_raa_fn_time("Permutation::interleave3", now.elapsed());
         new_input 
     }
     // Applies permutation to input vector and then punctures.
     fn puncture<F:BlazeField>(&self, input: Vec<F>) -> Vec<F> {
+        let now = Instant::now();
         let new_input = input.iter().enumerate().filter(|(i,x)| self.puncturing.contains_key(i)).map(|(i,x)| *x).collect::<Vec<_>>();
         assert_eq!(new_input.len(), input.len() >> 1);
+        log_raa_fn_time("Permutation::puncture", now.elapsed());
         new_input 
     }
 
@@ -95,7 +112,8 @@ impl Permutation{
 
 
     pub fn interleave_long<F:BlazeField>(&self, input: &Vec<Vec<F>>) -> Vec<Vec<F>>{
-        input
+        let now = Instant::now();
+        let result = input
             .par_iter()
             .map(|vec| {
                 let mut new_input = vec![F::zero(); vec.len()];
@@ -105,23 +123,28 @@ impl Permutation{
                 });
                 new_input
             })
-            .collect()
+            .collect();
+        log_raa_fn_time("Permutation::interleave_long", now.elapsed());
+        result
     }
 
 
     // Repeats the input and then applies the permutation.
     fn repeat_interleave<F:BlazeField>(&self, input: Vec<F>, rate: usize) -> Vec<F> {
+        let now = Instant::now();
         let mut new_input = vec![F::zero();input.len() * rate]; 
         let repetition = repetition_code(&input,rate);
         new_input.iter_mut().enumerate().for_each(|(i, mut x)| {
             let mut y = self.permutation1[i];
             *x = repetition[y as usize];
         });
+        log_raa_fn_time("Permutation::repeat_interleave", now.elapsed());
         repetition
     }
 
         // Repeats the input and then applies the permutation.
     fn repeat_interleave_long<F:BlazeField>(&self, input: &Vec<Vec<F>>, rate: usize) -> Vec<Vec<F>>{
+        let now = Instant::now();
         let mut new_inputs = Vec::new();
         for vec in input{
             let mut new_input = vec![F::zero(); vec.len() * rate];
@@ -131,6 +154,7 @@ impl Permutation{
             });
             new_inputs.push(new_input);
         }
+        log_raa_fn_time("Permutation::repeat_interleave_long", now.elapsed());
         new_inputs
     }
 }
@@ -158,20 +182,25 @@ pub fn log2_strict(n: usize) -> usize {
 }
 
 fn serial_accumulator<F:BlazeField>(mut input: &mut Vec<F>) {
+    let now = Instant::now();
     let mut prev_value = F::zero();
     for i in 0..input.len() {
         input[i] = input[i] ^ prev_value;
         prev_value = input[i];
     }
+    log_raa_fn_time("serial_accumulator", now.elapsed());
 }
 
 pub fn serial_accumulator_long<F:BlazeField>(mut input:&mut Vec<Vec<F>>){
+    let now = Instant::now();
     input.par_iter_mut().for_each(|mut v|{
         serial_accumulator(&mut v);
     });
+    log_raa_fn_time("serial_accumulator_long", now.elapsed());
 }
 
 pub fn parallel_accumulator_long<F:BlazeField>(input: &mut Vec<Vec<F>>) {
+    let now = Instant::now();
     input.par_iter_mut().for_each(|v| {
         if v.len() >= 8 {
             parallel_accumulator(v);
@@ -179,11 +208,13 @@ pub fn parallel_accumulator_long<F:BlazeField>(input: &mut Vec<Vec<F>>) {
             serial_accumulator(v);
         }
     });
+    log_raa_fn_time("parallel_accumulator_long", now.elapsed());
 }
 
 
 pub fn repetition_code_long<F:BlazeField>(input: &Vec<Vec<F>>, rate: usize) -> Vec<Vec<F>> {
-    input.par_iter().map(|v|{
+    let now = Instant::now();
+    let result = input.par_iter().map(|v|{
         let mut final_codeword = vec![F::zero(); v.len() * rate];
     //repeat each element "rate" times
         for (i, m) in v.iter().enumerate() {
@@ -192,10 +223,13 @@ pub fn repetition_code_long<F:BlazeField>(input: &Vec<Vec<F>>, rate: usize) -> V
             }
         }
         return final_codeword;
-    }).collect::<Vec<_>>()
+    }).collect::<Vec<_>>();
+    log_raa_fn_time("repetition_code_long", now.elapsed());
+    result
 }
 
 fn repetition_code<F: BlazeField>(message: &Vec<F>, rate: usize) -> Vec<F> {
+    let now = Instant::now();
     let mut final_codeword = vec![F::zero(); message.len() * rate];
     //repeat each element "rate" times
     for (i, m) in message.iter().enumerate() {
@@ -203,6 +237,7 @@ fn repetition_code<F: BlazeField>(message: &Vec<F>, rate: usize) -> Vec<F> {
             final_codeword[i * rate + j] = *m;
         }
     }
+    log_raa_fn_time("repetition_code", now.elapsed());
     return final_codeword;
 }
 
@@ -229,6 +264,7 @@ fn test_rep_code(){
     assert_eq!(repetition_code(&input, 2), vec![el1,el1,el2,el2]);
 }
 fn parallel_accumulator<F:BlazeField>(mut input: &mut Vec<F>) {
+    let now = Instant::now();
     //upward sweeep
     let size_per_core = input.len() / 8;
     input.par_chunks_mut(size_per_core).for_each(|chunk| {
@@ -268,6 +304,7 @@ fn parallel_accumulator<F:BlazeField>(mut input: &mut Vec<F>) {
         }
     });
     input.remove(0);
+    log_raa_fn_time("parallel_accumulator", now.elapsed());
 }
 
 #[test]
@@ -355,6 +392,7 @@ pub fn encode_bits_with_timings<F:BlazeField>(
     p1: &Permutation,
     rate: usize,
 ) -> (Vec<F>, RaaEncodeTimings) {
+    let now = Instant::now();
     let x = message.len();
     let mut timings = RaaEncodeTimings::default();
 
@@ -380,7 +418,9 @@ pub fn encode_bits_with_timings<F:BlazeField>(
     serial_accumulator(&mut second_round); // Accumulate
     timings.second_accumulate = now.elapsed();
 
-    (second_round, timings.finalize())
+    let result = (second_round, timings.finalize());
+    log_raa_fn_time("encode_bits_with_timings", now.elapsed());
+    result
 }
 
 pub fn encode_bits<F:BlazeField>(
@@ -389,8 +429,10 @@ pub fn encode_bits<F:BlazeField>(
     rate: usize,
     mut timer: &mut Duration,
 ) -> Vec<F> {
+    let now = Instant::now();
     let (codeword, timings) = encode_bits_with_timings(message, p1, rate);
     *timer += timings.total;
+    log_raa_fn_time("encode_bits", now.elapsed());
     codeword
 }
 
@@ -399,7 +441,10 @@ pub fn encode_bits_ser<F:BlazeField>(
     p: &Permutation,
     rate: usize
 ) -> Vec<F> {
-    encode_bits_ser_with_timings(message, p, rate).0
+    let now = Instant::now();
+    let result = encode_bits_ser_with_timings(message, p, rate).0;
+    log_raa_fn_time("encode_bits_ser", now.elapsed());
+    result
 }
 
 pub fn encode_bits_ser_with_timings<F:BlazeField>(
@@ -407,6 +452,7 @@ pub fn encode_bits_ser_with_timings<F:BlazeField>(
     p: &Permutation,
     rate: usize
 ) -> (Vec<F>, RaaEncodeTimings) {
+    let now = Instant::now();
     let mut timings = RaaEncodeTimings::default();
 
     let now = Instant::now();
@@ -445,7 +491,9 @@ pub fn encode_bits_ser_with_timings<F:BlazeField>(
     }
     timings.third_accumulate = now.elapsed();
 
-    (third_round, timings.finalize())
+    let result = (third_round, timings.finalize());
+    log_raa_fn_time("encode_bits_ser_with_timings", now.elapsed());
+    result
 }
 pub fn encode_bits_long<F:BlazeField>(
     message: &Vec<Vec<F>>,
@@ -454,7 +502,7 @@ pub fn encode_bits_long<F:BlazeField>(
     rate: usize,
     mut timer: &mut Duration,
 ) -> Vec<Vec<F>> {
-
+    let now = Instant::now();
     let x = message[0].len();
     let mut first_round = p1.repeat_interleave_long(message, rate); // Repeat and interleave.
 
@@ -466,7 +514,8 @@ pub fn encode_bits_long<F:BlazeField>(
 
     parallel_accumulator_long(&mut second_round); // Accumulate
 
-
+    *timer += now.elapsed();
+    log_raa_fn_time("encode_bits_long", now.elapsed());
     second_round
 }
 
