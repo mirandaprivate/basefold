@@ -55,6 +55,8 @@ fn print_bench_summary(
     poly_size: usize,
     queries: usize,
     sample_size: usize,
+    proof_size_bytes: usize,
+    proof_size_bits: usize,
     raa_repeat_interleave: Duration,
     raa_first_accumulate: Duration,
     raa_second_interleave: Duration,
@@ -69,7 +71,7 @@ fn print_bench_summary(
     verify: Duration,
 ) {
     println!(
-        "pcs={} log_per_row={} log_rows={} num_rows={} poly_size={} queries={} sample_size={} raa_repeat_interleave_ms={} raa_first_accumulate_ms={} raa_second_interleave_ms={} raa_second_accumulate_ms={} raa_third_interleave_ms={} raa_third_accumulate_ms={} raa_total_ms={} merkle_ms={} transcript_write_ms={} commit_ms={} prove_ms={} verify_ms={}",
+        "pcs={} log_per_row={} log_rows={} num_rows={} poly_size={} queries={} sample_size={} proof_size_bytes={} proof_size_bits={} raa_repeat_interleave_ms={} raa_first_accumulate_ms={} raa_second_interleave_ms={} raa_second_accumulate_ms={} raa_third_interleave_ms={} raa_third_accumulate_ms={} raa_total_ms={} merkle_ms={} transcript_write_ms={} commit_ms={} prove_ms={} verify_ms={}",
         pcs,
         log_per_row,
         log_rows,
@@ -77,6 +79,8 @@ fn print_bench_summary(
         poly_size,
         queries,
         sample_size,
+        proof_size_bytes,
+        proof_size_bits,
         raa_repeat_interleave.as_millis(),
         raa_first_accumulate.as_millis(),
         raa_second_interleave.as_millis(),
@@ -243,6 +247,8 @@ where
 
     let blaze_proof = blaze_transcript.into_proof();
     let b128_proof = b128_transcript.into_proof();
+    let proof_size_bytes = blaze_proof.len() + b128_proof.len();
+    let proof_size_bits = proof_size_bytes * 8;
 
     let mut verify_times = Vec::new();
     for sample_idx in 0..sample_size {
@@ -278,6 +284,8 @@ where
         poly_size,
         queries,
         sample_size,
+        proof_size_bytes,
+        proof_size_bits,
         raa_repeat_interleave_avg,
         raa_first_accumulate_avg,
         raa_second_interleave_avg,
@@ -292,6 +300,7 @@ where
         verify_avg,
     );
 
+    writeln!(&mut pcs.size_output(), "{:?}: {:?}", log_per_row, proof_size_bits).unwrap();
     writeln!(&mut pcs.verify_output(), "{:?}: {:?}", log_per_row, verify_avg.as_millis()).unwrap();
 }
 

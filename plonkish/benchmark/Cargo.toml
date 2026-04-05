@@ -41,6 +41,10 @@ name = "blaze_bench"
 harness = false
 
 [[bench]]
+name = "basefold_bench"
+harness = false
+
+[[bench]]
 name = "pcs_bench"
 harness = false
 
