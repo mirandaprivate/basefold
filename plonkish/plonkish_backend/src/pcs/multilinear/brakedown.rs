@@ -141,12 +141,12 @@ where
 	let encoding_time = Instant::now();
         let chunk_size = div_ceil(pp.num_rows, num_threads());
         parallelize_iter(
-            rows.chunks_exact_mut(chunk_size * codeword_len)
-                .zip(poly.evals().chunks_exact(chunk_size * row_len)),
+            rows.chunks_mut(chunk_size * codeword_len)
+                .zip(poly.evals().chunks(chunk_size * row_len)),
             |(rows, evals)| {
                 for (row, evals) in rows
-                    .chunks_exact_mut(codeword_len)
-                    .zip(evals.chunks_exact(row_len))
+                    .chunks_mut(codeword_len)
+                    .zip(evals.chunks(row_len))
                 {
                     row[..evals.len()].copy_from_slice(evals);
                     pp.brakedown.encode(row);
@@ -348,11 +348,13 @@ where
         let (t_0, t_1) = point_to_tensor(vp.num_rows, point);
         let mut combined_rows = Vec::with_capacity(vp.brakedown.num_proximity_testing() + 1);
         if vp.num_rows > 1 {
-            let coeffs = transcript.squeeze_challenges(vp.num_rows);
-            let mut combined_row = transcript.read_field_elements(row_len)?;
-            combined_row.resize(codeword_len, F::ZERO);
-            vp.brakedown.encode(&mut combined_row);
-            combined_rows.push((coeffs, combined_row));
+            for _ in 0..vp.brakedown.num_proximity_testing() {
+                let coeffs = transcript.squeeze_challenges(vp.num_rows);
+                let mut combined_row = transcript.read_field_elements(row_len)?;
+                combined_row.resize(codeword_len, F::ZERO);
+                vp.brakedown.encode(&mut combined_row);
+                combined_rows.push((coeffs, combined_row));
+            }
         }
         combined_rows.push({
             let mut combined_row = transcript.read_field_elements(row_len)?;

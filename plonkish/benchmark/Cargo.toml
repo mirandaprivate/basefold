@@ -45,6 +45,10 @@ name = "basefold_bench"
 harness = false
 
 [[bench]]
+name = "brakedown_bench"
+harness = false
+
+[[bench]]
 name = "pcs_bench"
 harness = false
 
