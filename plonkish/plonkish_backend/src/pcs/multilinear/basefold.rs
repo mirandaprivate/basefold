@@ -1728,7 +1728,7 @@ pub fn query_point<F: PrimeField>(
     eval_index: usize,
     mut rng: &mut ChaCha8Rng,
     level: usize,
-    mut cipher: &mut ctr::Ctr32LE<aes::Aes128>,
+    mut cipher: &mut ctr::Ctr64LE<aes::Aes128>,
 ) -> F {
     let level_index = eval_index % (block_length);
     let mut el = query_root_table_from_rng_aes::<F>(
@@ -1831,7 +1831,7 @@ pub fn query_root_table_from_rng_aes<F: PrimeField>(
     level: usize,
     index: usize,
     rng: &mut ChaCha8Rng,
-    cipher: &mut ctr::Ctr32LE<aes::Aes128>,
+    cipher: &mut ctr::Ctr64LE<aes::Aes128>,
 ) -> F {
     let mut level_offset: u128 = 1;
     for lg_m in 1..=level {
@@ -2222,7 +2222,7 @@ mod test {
         use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
         use generic_array::GenericArray;
         use hex_literal::hex;
-        type Aes128Ctr64LE = ctr::Ctr32LE<aes::Aes128>;
+        type Aes128Ctr64LE = ctr::Ctr64LE<aes::Aes128>;
         let mut rng = ChaCha12Rng::from_entropy();
 
         let mut key: [u8; 16] = [042; 16];
@@ -2514,7 +2514,7 @@ fn verifier_query_phase<F: PrimeField, H: Hash>(
     rng.fill_bytes(&mut key);
     rng.fill_bytes(&mut iv);
 
-    type Aes128Ctr64LE = ctr::Ctr32LE<aes::Aes128>;
+    type Aes128Ctr64LE = ctr::Ctr64LE<aes::Aes128>;
     let mut cipher = Aes128Ctr64LE::new(
         GenericArray::from_slice(&key[..]),
         GenericArray::from_slice(&iv[..]),
@@ -2679,7 +2679,7 @@ fn get_table_aes<F: PrimeField>(
     rng.fill_bytes(&mut key);
     rng.fill_bytes(&mut iv);
 
-    type Aes128Ctr64LE = ctr::Ctr32LE<aes::Aes128>;
+    type Aes128Ctr64LE = ctr::Ctr64LE<aes::Aes128>;
 
     let mut cipher = Aes128Ctr64LE::new(
         GenericArray::from_slice(&key[..]),
