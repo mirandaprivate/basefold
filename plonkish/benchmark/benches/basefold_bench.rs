@@ -75,18 +75,24 @@ fn print_bench_summary(
     k: usize,
     poly_size: usize,
     sample_size: usize,
+    proof_size_bytes: usize,
     proof_size_bits: usize,
     commit: Duration,
-    open: Duration,
+    prove: Duration,
     verify: Duration,
 ) {
     println!(
-        "bench_summary pcs={} k={} poly_size={} sample_size={} proof_size_bits={}",
-        pcs, k, poly_size, sample_size, proof_size_bits
+        "pcs={} k={} poly_size={} sample_size={} proof_size_bytes={} proof_size_bits={} commit_ms={} prove_ms={} verify_ms={}",
+        pcs,
+        k,
+        poly_size,
+        sample_size,
+        proof_size_bytes,
+        proof_size_bits,
+        commit.as_millis(),
+        prove.as_millis(),
+        verify.as_millis()
     );
-    println!("commit_time_ms={}", commit.as_millis());
-    println!("open_time_ms={}", open.as_millis());
-    println!("verify_time_ms={}", verify.as_millis());
 }
 
 fn bench_pcs<F, Pcs, T>(k: usize, pcs: System)
@@ -110,7 +116,7 @@ where
     );
 
     let mut commit_times = Vec::new();
-    let mut open_times = Vec::new();
+    let mut prove_times = Vec::new();
 
     for sample_idx in 0..sample_size {
         let mut transcript = T::new(());
@@ -124,10 +130,10 @@ where
         let eval = poly.evaluate(point.as_slice());
         transcript.write_field_element(&eval).unwrap();
 
-        let open_start = Instant::now();
+        let prove_start = Instant::now();
         Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
-        let open_elapsed = open_start.elapsed();
-        open_times.push(open_elapsed);
+        let prove_elapsed = prove_start.elapsed();
+        prove_times.push(prove_elapsed);
 
         println!(
             "bench_sample pcs={} sample={} phase=commit elapsed_ms={}",
@@ -136,18 +142,18 @@ where
             commit_elapsed.as_millis()
         );
         println!(
-            "bench_sample pcs={} sample={} phase=open elapsed_ms={}",
+            "bench_sample pcs={} sample={} phase=prove elapsed_ms={}",
             pcs,
             sample_idx,
-            open_elapsed.as_millis()
+            prove_elapsed.as_millis()
         );
     }
 
     let commit_avg = average_duration(&commit_times);
-    let open_avg = average_duration(&open_times);
+    let prove_avg = average_duration(&prove_times);
 
     writeln!(&mut pcs.commit_output(), "{k}, {}", commit_avg.as_millis()).unwrap();
-    writeln!(&mut pcs.output(), "{k}, {}", open_avg.as_millis()).unwrap();
+    writeln!(&mut pcs.output(), "{k}, {}", prove_avg.as_millis()).unwrap();
 
     let mut transcript = T::new(());
     let comm = Pcs::commit_and_write(&pp, &poly, &mut transcript).unwrap();
@@ -156,6 +162,7 @@ where
     transcript.write_field_element(&eval).unwrap();
     Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
     let proof = transcript.into_proof();
+    let proof_size_bytes = proof.len();
     let proof_size_bits = proof.len() * 8;
 
     let mut verify_times = Vec::new();
@@ -189,9 +196,10 @@ where
         k,
         poly_size,
         sample_size,
+        proof_size_bytes,
         proof_size_bits,
         commit_avg,
-        open_avg,
+        prove_avg,
         verify_avg,
     );
 }
