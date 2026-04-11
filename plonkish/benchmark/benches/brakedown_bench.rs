@@ -299,7 +299,7 @@ fn parse_args() -> (Vec<System>, Range<usize>, Option<usize>) {
     let forced_sample_size = args().chain(Some("".to_string())).tuple_windows().fold(
         None,
         |sample_size, (key, value)| match key.as_str() {
-            "--samples" => {
+            "--sample-size" | "--samples" => {
                 if value.is_empty() || value.starts_with("--") {
                     Some(1)
                 } else {
