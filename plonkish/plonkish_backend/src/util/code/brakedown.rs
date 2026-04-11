@@ -121,10 +121,8 @@ impl<F: PrimeField> LinearCodes<F> for Brakedown<F> {
         let target = target.as_mut();
         assert_eq!(target.len(), self.codeword_len);
         if self.a.is_empty() {
-            // Tiny instances can skip the recursive layers while staying systematic.
-            let (input, parity) = target.split_at_mut(self.row_len);
-            let input = input.to_vec();
-            reed_solomon_into(&input, parity);
+            let input = target[..self.row_len].to_vec();
+            terminal_encode_into(&input, target);
             return;
         }
 
@@ -147,8 +145,11 @@ impl<F: PrimeField> LinearCodes<F> for Brakedown<F> {
             self.recursive_starts[self.a.len() - 2]
         };
         let base_rs_start = *self.recursive_starts.last().unwrap();
-        let tmp = a_last.dot(&target[input_start..input_start + a_last.dimension.n]);
-        reed_solomon_into(&tmp, &mut target[base_rs_start..base_rs_start + b_last.dimension.n]);
+        let base_message = a_last.dot(&target[input_start..input_start + a_last.dimension.n]);
+        terminal_encode_into(
+            &base_message,
+            &mut target[base_rs_start..base_rs_start + b_last.dimension.n],
+        );
 
         for idx in (0..self.b.len()).rev() {
             let input_start = if idx + 1 == self.b.len() {
@@ -285,6 +286,7 @@ pub trait BrakedownSpec: Debug {
     ) -> (Vec<SparseMatrix<F>>, Vec<SparseMatrix<F>>) {
         let (a, b) = Self::dimensions(log2_q, n, n_0);
         a.into_iter()
+            .into_iter()
             .zip(b)
             .map(|(a, b)| {
                 (
@@ -294,6 +296,16 @@ pub trait BrakedownSpec: Debug {
             })
             .unzip()
     }
+}
+
+fn terminal_encode_into<F: Field>(input: &[F], mut target: impl AsMut<[F]>) {
+    let target = target.as_mut();
+    assert!(target.len() >= input.len());
+    target[..input.len()].copy_from_slice(input);
+    target[input.len()..]
+        .iter_mut()
+        .zip(steps(F::ONE))
+        .for_each(|(item, x)| *item = horner(input, &x));
 }
 
 macro_rules! impl_spec_128 {
@@ -389,14 +401,6 @@ impl<F: Field> SparseMatrix<F> {
         self.dot_into(array, &mut target);
         target
     }
-}
-
-fn reed_solomon_into<F: Field>(input: &[F], mut target: impl AsMut<[F]>) {
-    target
-        .as_mut()
-        .iter_mut()
-        .zip(steps(F::ONE))
-        .for_each(|(target, x)| *target = horner(input, &x));
 }
 
 // H(p) = -p \log_2(p) - (1 - p) \log_2(1 - p)
