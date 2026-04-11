@@ -38,7 +38,7 @@ impl BasefoldExtParams for P {
     }
 
     fn get_basecode_rounds() -> usize {
-        2
+        1
     }
 
     fn get_reps() -> usize {
@@ -51,6 +51,32 @@ impl BasefoldExtParams for P {
 
     fn get_code_type() -> String {
         "random".to_string()
+    }
+}
+
+impl P {
+    fn log_rate() -> usize {
+        <Self as BasefoldExtParams>::get_rate()
+    }
+
+    fn rate() -> usize {
+        1 << Self::log_rate()
+    }
+
+    fn basecode_rounds() -> usize {
+        <Self as BasefoldExtParams>::get_basecode_rounds()
+    }
+
+    fn reps() -> usize {
+        <Self as BasefoldExtParams>::get_reps()
+    }
+
+    fn rs_basecode() -> bool {
+        <Self as BasefoldExtParams>::get_rs_basecode()
+    }
+
+    fn code_type() -> String {
+        <Self as BasefoldExtParams>::get_code_type()
     }
 }
 
@@ -75,6 +101,12 @@ fn print_bench_summary(
     k: usize,
     poly_size: usize,
     sample_size: usize,
+    log_rate: usize,
+    rate: usize,
+    basecode_rounds: usize,
+    reps: usize,
+    rs_basecode: bool,
+    code_type: &str,
     proof_size_bytes: usize,
     proof_size_bits: usize,
     commit: Duration,
@@ -82,11 +114,18 @@ fn print_bench_summary(
     verify: Duration,
 ) {
     println!(
-        "pcs={} k={} poly_size={} sample_size={} proof_size_bytes={} proof_size_bits={} commit_ms={} prove_ms={} verify_ms={}",
+        "pcs={} k={} poly_size={} sample_size={} log_rate={} rate={} basecode_rounds={} k0={} reps={} rs_basecode={} code_type={} proof_size_bytes={} proof_size_bits={} commit_ms={} prove_ms={} verify_ms={}",
         pcs,
         k,
         poly_size,
         sample_size,
+        log_rate,
+        rate,
+        basecode_rounds,
+        basecode_rounds,
+        reps,
+        rs_basecode,
+        code_type,
         proof_size_bytes,
         proof_size_bits,
         commit.as_millis(),
@@ -110,9 +149,20 @@ where
     let poly = MultilinearPolynomial::rand(k, OsRng);
 
     let sample_size = sample_size(k);
+    let code_type = P::code_type();
     println!(
-        "bench_start pcs={} k={} poly_size={} sample_size={}",
-        pcs, k, poly_size, sample_size
+        "bench_start pcs={} k={} poly_size={} sample_size={} log_rate={} rate={} basecode_rounds={} k0={} reps={} rs_basecode={} code_type={}",
+        pcs,
+        k,
+        poly_size,
+        sample_size,
+        P::log_rate(),
+        P::rate(),
+        P::basecode_rounds(),
+        P::basecode_rounds(),
+        P::reps(),
+        P::rs_basecode(),
+        code_type
     );
 
     let mut commit_times = Vec::new();
@@ -196,6 +246,12 @@ where
         k,
         poly_size,
         sample_size,
+        P::log_rate(),
+        P::rate(),
+        P::basecode_rounds(),
+        P::reps(),
+        P::rs_basecode(),
+        code_type.as_str(),
         proof_size_bytes,
         proof_size_bits,
         commit_avg,
