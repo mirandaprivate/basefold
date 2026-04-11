@@ -31,9 +31,13 @@ use std::{
 const OUTPUT_DIR: &str = "./bench_data/brakedown";
 
 fn main() {
-    let (systems, k_range) = parse_args();
+    let (systems, k_range, forced_sample_size) = parse_args();
     create_output(&systems);
-    k_range.for_each(|k| systems.iter().for_each(|system| system.bench(k)));
+    k_range.for_each(|k| {
+        systems
+            .iter()
+            .for_each(|system| system.bench(k, forced_sample_size))
+    });
 }
 
 fn average_duration(samples: &[Duration]) -> Duration {
@@ -65,7 +69,7 @@ fn print_bench_summary(
     println!("verify_time_ms={}", verify.as_millis());
 }
 
-fn bench_pcs<F, Pcs, T>(k: usize, pcs: System)
+fn bench_pcs<F, Pcs, T>(k: usize, pcs: System, forced_sample_size: Option<usize>)
 where
     F: PrimeField,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
@@ -79,7 +83,7 @@ where
     let (pp, vp) = Pcs::trim(&param, poly_size, 1).unwrap();
     let poly = MultilinearPolynomial::rand(k, OsRng);
 
-    let sample_size = sample_size(k);
+    let sample_size = forced_sample_size.unwrap_or_else(|| sample_size(k));
     println!(
         "bench_start pcs={} k={} poly_size={} sample_size={}",
         pcs, k, poly_size, sample_size
@@ -225,20 +229,32 @@ impl System {
             .unwrap()
     }
 
-    fn bench(&self, k: usize) {
+    fn bench(&self, k: usize, forced_sample_size: Option<usize>) {
         type BrakedownSpec1Pcs = MultilinearBrakedown<Mersenne127, Blake2s256, BrakedownSpec1>;
         type BrakedownSpec3Pcs = MultilinearBrakedown<Mersenne127, Blake2s256, BrakedownSpec3>;
         type BrakedownSpec6Pcs = MultilinearBrakedown<Mersenne127, Blake2s256, BrakedownSpec6>;
 
         match self {
             System::Spec1 => {
-                bench_pcs::<Mersenne127, BrakedownSpec1Pcs, Blake2sTranscript<_>>(k, *self)
+                bench_pcs::<Mersenne127, BrakedownSpec1Pcs, Blake2sTranscript<_>>(
+                    k,
+                    *self,
+                    forced_sample_size,
+                )
             }
             System::Spec3 => {
-                bench_pcs::<Mersenne127, BrakedownSpec3Pcs, Blake2sTranscript<_>>(k, *self)
+                bench_pcs::<Mersenne127, BrakedownSpec3Pcs, Blake2sTranscript<_>>(
+                    k,
+                    *self,
+                    forced_sample_size,
+                )
             }
             System::Spec6 => {
-                bench_pcs::<Mersenne127, BrakedownSpec6Pcs, Blake2sTranscript<_>>(k, *self)
+                bench_pcs::<Mersenne127, BrakedownSpec6Pcs, Blake2sTranscript<_>>(
+                    k,
+                    *self,
+                    forced_sample_size,
+                )
             }
         }
     }
@@ -254,7 +270,7 @@ impl Display for System {
     }
 }
 
-fn parse_args() -> (Vec<System>, Range<usize>) {
+fn parse_args() -> (Vec<System>, Range<usize>, Option<usize>) {
     let (systems, k_range) = args().chain(Some("".to_string())).tuple_windows().fold(
         (Vec::new(), 10..25),
         |(mut systems, mut k_range), (key, value)| {
@@ -280,12 +296,25 @@ fn parse_args() -> (Vec<System>, Range<usize>) {
             (systems, k_range)
         },
     );
+    let forced_sample_size = args().chain(Some("".to_string())).tuple_windows().fold(
+        None,
+        |sample_size, (key, value)| match key.as_str() {
+            "--samples" => {
+                if value.is_empty() || value.starts_with("--") {
+                    Some(1)
+                } else {
+                    Some(value.parse().expect("sample size to be usize"))
+                }
+            }
+            _ => sample_size,
+        },
+    );
 
     let mut systems = systems.into_iter().sorted().dedup().collect_vec();
     if systems.is_empty() {
         systems = System::all();
     }
-    (systems, k_range)
+    (systems, k_range, forced_sample_size)
 }
 
 fn create_output(systems: &[System]) {

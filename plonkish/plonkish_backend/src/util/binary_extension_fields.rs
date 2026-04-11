@@ -61,6 +61,7 @@ impl B128{
         result
     }
 }
+
 impl  Default for B128{
     // Required method
     fn default() -> Self{

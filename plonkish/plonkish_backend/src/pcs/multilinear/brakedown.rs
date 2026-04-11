@@ -20,8 +20,7 @@ use crate::{
     Error,
 };
 use rand::RngCore;
-use std::{borrow::Cow, marker::PhantomData, mem::size_of, slice,env};
-use std::time::Instant;
+use std::{borrow::Cow, marker::PhantomData, mem::size_of, slice};
 
 #[derive(Debug)]
 pub struct MultilinearBrakedown<F: PrimeField, H: Hash, S: BrakedownSpec>(PhantomData<(F, H, S)>);
@@ -105,7 +104,8 @@ where
     fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());
         let num_vars = poly_size.ilog2() as usize;
-        let brakedown = Brakedown::new_multilinear::<S>(num_vars, 20.min((1 << num_vars) - 1), rng);
+        // The paper uses 30 as the default base length for the recursive encoder.
+        let brakedown = Brakedown::new_multilinear::<S>(num_vars, 30.min((1 << num_vars) - 1), rng);
         Ok(MultilinearBrakedownParams {
             num_vars,
             num_rows: (1 << num_vars) / brakedown.row_len(),
@@ -138,7 +138,6 @@ where
         let mut rows = vec![F::ZERO; pp.num_rows * codeword_len];
 
         // encode rows
-	let encoding_time = Instant::now();
         let chunk_size = div_ceil(pp.num_rows, num_threads());
         parallelize_iter(
             rows.chunks_mut(chunk_size * codeword_len)
@@ -154,12 +153,9 @@ where
             },
         );
 
-	let now = Instant::now();	
-
         // hash columns
         let depth = codeword_len.next_power_of_two().ilog2() as usize;
 
-	let new_n = Instant::now();
         let mut hashes = vec![Output::<H>::default(); (2 << depth) - 1];
 
         parallelize(&mut hashes[..codeword_len], |(hashes, start)| {
@@ -178,7 +174,6 @@ where
         let mut offset = 0;
         for width in (1..=depth).rev().map(|depth| 1 << depth) {
             let (input, output) = hashes[offset..].split_at_mut(width);
-//	    let num_threads = env::var("RAYON_NUM_THREADS").unwrap();
             let chunk_size = div_ceil(output.len(), num_threads());
             parallelize_iter(
                 input
