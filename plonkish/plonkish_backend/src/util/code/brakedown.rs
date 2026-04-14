@@ -25,34 +25,9 @@ pub struct Brakedown<F> {
     num_proximity_testing: usize,
     a: Vec<SparseMatrix<F>>,
     b: Vec<SparseMatrix<F>>,
-    recursive_starts: Vec<usize>,
-    parity_starts: Vec<usize>,
 }
 
 impl<F: PrimeField> Brakedown<F> {
-    fn near_square_row_len<S: BrakedownSpec>(num_vars: usize, n_0: usize) -> usize {
-        let poly_len = 1usize << num_vars;
-        let min_row_len = (n_0 + 1).next_power_of_two().min(poly_len);
-        let col_openings = S::num_column_opening();
-
-        // The Brakedown paper arranges the witness into an approximately square matrix
-        // before encoding rows. We follow the same idea by first estimating the
-        // codeword length near the square point and then solving for the row length.
-        let approx_codeword_len = (((col_openings * poly_len) as f64).sqrt().ceil() as usize)
-            .saturating_mul(2)
-            .next_power_of_two()
-            .max(min_row_len)
-            .min(poly_len);
-        let degree_tests =
-            S::num_proximity_testing(F::NUM_BITS as usize, approx_codeword_len, n_0).max(1);
-        let near_square_row_len = (((col_openings * poly_len) as f64 / degree_tests as f64)
-            .sqrt()
-            .ceil() as usize)
-            .next_power_of_two();
-
-        near_square_row_len.max(min_row_len).min(poly_len)
-    }
-
     pub fn proof_size<S: BrakedownSpec>(n_0: usize, c: usize, r: usize) -> usize {
         let log2_q = F::NUM_BITS as usize;
         let num_ldt = S::num_proximity_testing(log2_q, c, n_0);
@@ -67,25 +42,23 @@ impl<F: PrimeField> Brakedown<F> {
         assert!(1 << num_vars > n_0);
 
         let log2_q = F::NUM_BITS as usize;
-        let row_len = Self::near_square_row_len::<S>(num_vars, n_0);
+        let min_log2_n = (n_0 + 1).next_power_of_two().ilog2() as usize;
+
+        let (_, row_len) =
+            (min_log2_n..=num_vars).fold((usize::MAX, 0), |(min_proof_size, row_len), log2_n| {
+                let proof_size = Self::proof_size::<S>(n_0, 1 << log2_n, 1 << (num_vars - log2_n));
+                if proof_size < min_proof_size {
+                    (proof_size, 1 << log2_n)
+                } else {
+                    (min_proof_size, row_len)
+                }
+            });
+
+//	let row_len = (((1 << num_vars) as f64).sqrt() as usize).next_power_of_two() as usize;
         let codeword_len = S::codeword_len(log2_q, row_len, n_0);
         let num_column_opening = S::num_column_opening();
         let num_proximity_testing = S::num_proximity_testing(log2_q, row_len, n_0);
         let (a, b) = S::matrices(log2_q, row_len, n_0, rng);
-        let recursive_starts = a
-            .iter()
-            .scan(0, |acc, a| {
-                *acc += a.dimension.n;
-                Some(*acc)
-            })
-            .collect_vec();
-        let parity_starts = b
-            .iter()
-            .scan(codeword_len, |acc, b| {
-                *acc -= b.dimension.m;
-                Some(*acc)
-            })
-            .collect_vec();
 
         Self {
             row_len,
@@ -94,8 +67,6 @@ impl<F: PrimeField> Brakedown<F> {
             num_proximity_testing,
             a,
             b,
-            recursive_starts,
-            parity_starts,
         }
     }
 }
@@ -120,53 +91,39 @@ impl<F: PrimeField> LinearCodes<F> for Brakedown<F> {
     fn encode(&self, mut target: impl AsMut<[F]>) {
         let target = target.as_mut();
         assert_eq!(target.len(), self.codeword_len);
-        if self.a.is_empty() {
-            let input = target[..self.row_len].to_vec();
-            terminal_encode_into(&input, target);
-            return;
-        }
+
+        let mut input_offset = 0;
+        self.a[..self.a.len() - 1].iter().for_each(|a| {
+            let (input, output) = target[input_offset..].split_at_mut(a.dimension.n);
+            a.dot_into(input, &mut output[..a.dimension.m]);
+            input_offset += a.dimension.n;
+        });
 
         let a_last = self.a.last().unwrap();
         let b_last = self.b.last().unwrap();
-        for (idx, a) in self.a[..self.a.len() - 1].iter().enumerate() {
-            let input_start = if idx == 0 {
-                0
-            } else {
-                self.recursive_starts[idx - 1]
-            };
-            let output_start = self.recursive_starts[idx];
-            let input = target[input_start..input_start + a.dimension.n].to_vec();
-            a.dot_into(&input, &mut target[output_start..output_start + a.dimension.m]);
-        }
+        let (input, output) = target[input_offset..].split_at_mut(a_last.dimension.n);
+        let tmp = a_last.dot(input);
+        reed_solomon_into(&tmp, &mut output[..b_last.dimension.n]);
+        let mut output_offset = input_offset + a_last.dimension.n + b_last.dimension.n;
+        input_offset += a_last.dimension.n + a_last.dimension.m;
 
-        let input_start = if self.a.len() == 1 {
-            0
-        } else {
-            self.recursive_starts[self.a.len() - 2]
-        };
-        let base_rs_start = *self.recursive_starts.last().unwrap();
-        let base_message = a_last.dot(&target[input_start..input_start + a_last.dimension.n]);
-        terminal_encode_into(
-            &base_message,
-            &mut target[base_rs_start..base_rs_start + b_last.dimension.n],
-        );
-
-        for idx in (0..self.b.len()).rev() {
-            let input_start = if idx + 1 == self.b.len() {
-                base_rs_start
-            } else {
-                self.recursive_starts[idx]
-            };
-            let input = target[input_start..input_start + self.b[idx].dimension.n].to_vec();
-            let parity_start = self.parity_starts[idx];
-            self.b[idx].dot_into(
-                &input,
-                &mut target[parity_start..parity_start + self.b[idx].dimension.m],
-            );
-        }
+        self.a
+            .iter()
+            .rev()
+            .zip(self.b.iter().rev())
+            .for_each(|(a, b)| {
+                input_offset -= a.dimension.m;
+                let (input, output) = target.split_at_mut(output_offset);
+                b.dot_into(
+                    &input[input_offset..input_offset + b.dimension.n],
+                    &mut output[..b.dimension.m],
+                );
+                output_offset += b.dimension.m;
+            });
 
         if cfg!(feature = "sanity-check") {
-            assert_eq!(self.parity_starts[0] + self.b[0].dimension.m, target.len());
+            assert_eq!(input_offset, self.a[0].dimension.n);
+            assert_eq!(output_offset, target.len());
         }
     }
 }
@@ -211,7 +168,7 @@ pub trait BrakedownSpec: Debug {
         let log2_q = log2_q as f64;
         let n = n as f64;
         min(
-            ceil(2.0 * beta * n) + ceil(((r * n) - n + 110.0) / log2_q),
+            ceil((2.0 * beta + ((r - 1.0) + 110.0 / n) / log2_q) * n),
             ceil(
                 (r * alpha * h(beta / r) + mu * h(nu / mu) + 110.0 / n)
                     / (alpha * beta * (mu / nu).log2()),
@@ -235,32 +192,19 @@ pub trait BrakedownSpec: Debug {
         n: usize,
         n_0: usize,
     ) -> (Vec<SparseMatrixDimension>, Vec<SparseMatrixDimension>) {
-        assert!(n >= n_0);
+        assert!(n > n_0);
 
-        let mut a = Vec::new();
-        let mut current = n;
-        while current >= n_0 {
-            let next = ceil(current as f64 * Self::ALPHA);
-            if next >= current {
-                break;
-            }
-            a.push(SparseMatrixDimension::new(
-                current,
-                next,
-                min(Self::c_n(current), next),
-            ));
-            current = next;
-        }
+        let a = iter::successors(Some(n), |n| Some(ceil(*n as f64 * Self::ALPHA)))
+            .tuple_windows()
+            .map(|(n, m)| SparseMatrixDimension::new(n, m, min(Self::c_n(n), m)))
+            .take_while(|a| a.n > n_0)
+            .collect_vec();
         let b = a
             .iter()
             .map(|a| {
                 let n_prime = ceil(a.m as f64 * Self::R);
                 let m_prime = ceil(a.n as f64 * Self::R) - a.n - n_prime;
-                SparseMatrixDimension::new(
-                    n_prime,
-                    m_prime,
-                    min(Self::d_n(log2_q, n_prime), m_prime),
-                )
+                SparseMatrixDimension::new(n_prime, m_prime, min(Self::d_n(log2_q, a.n), m_prime))
             })
             .collect();
 
@@ -269,13 +213,12 @@ pub trait BrakedownSpec: Debug {
 
     fn codeword_len(log2_q: usize, n: usize, n_0: usize) -> usize {
         let (a, b) = Self::dimensions(log2_q, n, n_0);
-        if a.is_empty() {
-            ceil(n as f64 * Self::R)
-        } else {
-            a.iter().map(|a| a.n).sum::<usize>()
-                + b.last().unwrap().n
-                + b.iter().map(|b| b.m).sum::<usize>()
-        }
+        iter::empty()
+            .chain(Some(a[0].n))
+            .chain(a[..a.len() - 1].iter().map(|a| a.m))
+            .chain(Some(b.last().unwrap().n))
+            .chain(b.iter().map(|b| b.m))
+            .sum()
     }
 
     fn matrices<F: Field>(
@@ -286,7 +229,6 @@ pub trait BrakedownSpec: Debug {
     ) -> (Vec<SparseMatrix<F>>, Vec<SparseMatrix<F>>) {
         let (a, b) = Self::dimensions(log2_q, n, n_0);
         a.into_iter()
-            .into_iter()
             .zip(b)
             .map(|(a, b)| {
                 (
@@ -296,16 +238,6 @@ pub trait BrakedownSpec: Debug {
             })
             .unzip()
     }
-}
-
-fn terminal_encode_into<F: Field>(input: &[F], mut target: impl AsMut<[F]>) {
-    let target = target.as_mut();
-    assert!(target.len() >= input.len());
-    target[..input.len()].copy_from_slice(input);
-    target[input.len()..]
-        .iter_mut()
-        .zip(steps(F::ONE))
-        .for_each(|(item, x)| *item = horner(input, &x));
 }
 
 macro_rules! impl_spec_128 {
@@ -363,15 +295,7 @@ impl<F: Field> SparseMatrix<F> {
                 .count();
             columns
                 .into_iter()
-                .map(|column| {
-                    let coeff = loop {
-                        let coeff = F::random(&mut rng);
-                        if coeff != F::ZERO {
-                            break coeff;
-                        }
-                    };
-                    (column, coeff)
-                })
+                .map(|column| (column, F::random(&mut rng)))
                 .collect_vec()
         })
         .take(dimension.n)
@@ -401,6 +325,14 @@ impl<F: Field> SparseMatrix<F> {
         self.dot_into(array, &mut target);
         target
     }
+}
+
+fn reed_solomon_into<F: Field>(input: &[F], mut target: impl AsMut<[F]>) {
+    target
+        .as_mut()
+        .iter_mut()
+        .zip(steps(F::ONE))
+        .for_each(|(target, x)| *target = horner(input, &x));
 }
 
 // H(p) = -p \log_2(p) - (1 - p) \log_2(1 - p)
