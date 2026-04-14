@@ -4,12 +4,13 @@ use crate::{
         arithmetic::{div_ceil, usize_from_bits_le, BooleanHypercube, Field},
         expression::Rotation,
         impl_index,
-        parallel::{num_threads, parallelize, parallelize_iter},
+        parallel::{num_threads, par_map_collect, parallelize, parallelize_iter},
         BitIndex, Deserialize, Itertools, Serialize,
     },
 };
 use num_integer::Integer;
-use rand::RngCore;
+use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha12Rng;
 use std::{
     borrow::Cow,
     iter::{self, Sum},
@@ -123,11 +124,25 @@ impl<F: Field> MultilinearPolynomial<F> {
     }
 
     pub fn rand(num_vars: usize, mut rng: impl RngCore) -> Self {
-        Self::new(
-            iter::repeat_with(|| F::random(&mut rng))
-                .take(1 << num_vars)
-                .collect(),
-        )
+        let eval_count = 1 << num_vars;
+        let chunk_size = div_ceil(eval_count, num_threads()).max(1);
+        let chunk_jobs = (0..eval_count)
+            .step_by(chunk_size)
+            .map(|start| {
+                let mut seed = [0u8; 32];
+                rng.fill_bytes(&mut seed);
+                let len = (eval_count - start).min(chunk_size);
+                (seed, len)
+            })
+            .collect::<Vec<_>>();
+        let chunks: Vec<Vec<F>> = par_map_collect(chunk_jobs, |(seed, len)| {
+            let mut local_rng = ChaCha12Rng::from_seed(seed);
+            iter::repeat_with(|| F::random(&mut local_rng))
+                .take(len)
+                .collect()
+        });
+
+        Self::new(chunks.into_iter().flatten().collect())
     }
 
     pub fn split(&self, log_num_chunks:usize) -> Vec<Self>{

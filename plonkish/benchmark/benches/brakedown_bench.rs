@@ -79,15 +79,26 @@ where
 {
     let mut rng = OsRng;
     let poly_size = 1 << k;
+    let setup_start = Instant::now();
     let param = Pcs::setup(poly_size, 1, &mut rng).unwrap();
+    let setup_elapsed = setup_start.elapsed();
+
+    let trim_start = Instant::now();
     let (pp, vp) = Pcs::trim(&param, poly_size, 1).unwrap();
+    let trim_elapsed = trim_start.elapsed();
+
+    let poly_rand_start = Instant::now();
     let poly = MultilinearPolynomial::rand(k, OsRng);
+    let poly_rand_elapsed = poly_rand_start.elapsed();
 
     let sample_size = forced_sample_size.unwrap_or_else(|| sample_size(k));
     println!(
         "bench_start pcs={} k={} poly_size={} sample_size={}",
         pcs, k, poly_size, sample_size
     );
+    println!("setup_time_ms={}", setup_elapsed.as_millis());
+    println!("trim_time_ms={}", trim_elapsed.as_millis());
+    println!("poly_rand_time_ms={}", poly_rand_elapsed.as_millis());
 
     let mut commit_times = Vec::new();
     let mut open_times = Vec::new();
