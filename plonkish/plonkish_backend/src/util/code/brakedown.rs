@@ -46,15 +46,16 @@ impl<F: PrimeField> Brakedown<F> {
         let log2_q = F::NUM_BITS as usize;
         let min_log2_n = (n_0 + 1).next_power_of_two().ilog2() as usize;
 
-        let (_, row_len) =
-            (min_log2_n..=num_vars).fold((usize::MAX, 0), |(min_proof_size, row_len), log2_n| {
-                let proof_size = Self::proof_size::<S>(n_0, 1 << log2_n, 1 << (num_vars - log2_n));
-                if proof_size < min_proof_size {
-                    (proof_size, 1 << log2_n)
-                } else {
-                    (min_proof_size, row_len)
-                }
-            });
+        let row_len_jobs = (min_log2_n..=num_vars).collect::<Vec<_>>();
+        let row_len_candidates: Vec<(usize, usize)> = par_map_collect(row_len_jobs, |log2_n| {
+            let row_len = 1 << log2_n;
+            let proof_size = Self::proof_size::<S>(n_0, row_len, 1 << (num_vars - log2_n));
+            (proof_size, row_len)
+        });
+        let (.., row_len) = row_len_candidates
+            .into_iter()
+            .min_by_key(|(proof_size, row_len)| (*proof_size, *row_len))
+            .unwrap();
 
 //	let row_len = (((1 << num_vars) as f64).sqrt() as usize).next_power_of_two() as usize;
         let codeword_len = S::codeword_len(log2_q, row_len, n_0);
