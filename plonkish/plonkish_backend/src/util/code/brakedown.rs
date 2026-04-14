@@ -10,11 +10,10 @@ use crate::util::{
     parallel::{num_threads, par_map_collect},
     Deserialize, Itertools, Serialize,
 };
-use rand::{distributions::Uniform, Rng, RngCore, SeedableRng};
+use rand::{seq::index::sample, RngCore, SeedableRng};
 use rand_chacha::ChaCha12Rng;
 use std::{
     cmp::{max, min},
-    collections::BTreeSet,
     fmt::Debug,
     iter
 };
@@ -259,7 +258,7 @@ pub trait BrakedownSpec: Debug {
             .sum()
     }
 
-    fn matrices<F: Field>(
+    fn matrices<F: PrimeField>(
         log2_q: usize,
         n: usize,
         n_0: usize,
@@ -269,7 +268,7 @@ pub trait BrakedownSpec: Debug {
         Self::matrices_from_dimensions(a, b, rng)
     }
 
-    fn matrices_from_dimensions<F: Field>(
+    fn matrices_from_dimensions<F: PrimeField>(
         a: Vec<SparseMatrixDimension>,
         b: Vec<SparseMatrixDimension>,
         mut rng: impl RngCore,
@@ -346,7 +345,7 @@ pub struct SparseMatrix<F> {
     cells: Vec<(usize, F)>,
 }
 
-impl<F: Field> SparseMatrix<F> {
+impl<F: PrimeField> SparseMatrix<F> {
     fn new(dimension: SparseMatrixDimension, mut rng: impl RngCore) -> Self {
         let chunk_size = div_ceil(dimension.n, num_threads()).max(1);
         let row_jobs = (0..dimension.n)
@@ -362,15 +361,9 @@ impl<F: Field> SparseMatrix<F> {
             let mut row_rng = ChaCha12Rng::from_seed(seed);
             (0..row_count)
                 .flat_map(|_| {
-                    let mut columns = BTreeSet::<usize>::new();
-                    (&mut row_rng)
-                        .sample_iter(&Uniform::new(0, dimension.m))
-                        .filter(|column| columns.insert(*column))
-                        .take(dimension.d)
-                        .count();
-                    columns
+                    sample(&mut row_rng, dimension.m, dimension.d)
                         .into_iter()
-                        .map(|column| (column, F::random(&mut row_rng)))
+                        .map(|column| (column, fast_random_coeff(&mut row_rng)))
                         .collect_vec()
                 })
                 .collect()
@@ -378,7 +371,9 @@ impl<F: Field> SparseMatrix<F> {
         let cells = row_chunks.into_iter().flatten().collect();
         Self { dimension, cells }
     }
+}
 
+impl<F: Field> SparseMatrix<F> {
     fn rows(&self) -> impl Iterator<Item = &[(usize, F)]> {
         self.cells.chunks(self.dimension.d)
     }
@@ -408,6 +403,18 @@ fn reed_solomon_into<F: Field>(input: &[F], mut target: impl AsMut<[F]>) {
         .iter_mut()
         .zip(steps(F::ONE))
         .for_each(|(target, x)| *target = horner(input, &x));
+}
+
+fn fast_random_coeff<F: PrimeField>(mut rng: impl RngCore) -> F {
+    let byte_len = (F::NUM_BITS as usize).next_power_of_two() / 8;
+    assert!(byte_len <= 64);
+    let mut bytes = [0u8; 64];
+    rng.fill_bytes(&mut bytes[..byte_len]);
+
+    let radix = F::from(256);
+    bytes[..byte_len]
+        .iter()
+        .fold(F::ZERO, |acc, byte| acc * radix + F::from(u64::from(*byte)))
 }
 
 // H(p) = -p \log_2(p) - (1 - p) \log_2(1 - p)
