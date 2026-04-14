@@ -40,8 +40,13 @@ impl<F: PrimeField> Brakedown<F> {
             .next_power_of_two()
             .max(min_row_len)
             .min(poly_len);
-        let degree_tests =
-            S::num_proximity_testing(F::NUM_BITS as usize, approx_codeword_len, n_0).max(1);
+        let (approx_a, approx_b) = S::dimensions(F::NUM_BITS as usize, approx_codeword_len, n_0);
+        let approx_full_codeword_len = S::codeword_len_from_dimensions(&approx_a, &approx_b);
+        let degree_tests = S::num_proximity_testing_from_codeword_len(
+            F::NUM_BITS as usize,
+            approx_full_codeword_len,
+        )
+        .max(1);
         let near_square_row_len = (((col_openings * poly_len) as f64 / degree_tests as f64)
             .sqrt()
             .ceil() as usize)
@@ -65,24 +70,19 @@ impl<F: PrimeField> Brakedown<F> {
 
         let log2_q = F::NUM_BITS as usize;
         let row_len = Self::near_square_row_len::<S>(num_vars, n_0);
+        let (a_dimensions, b_dimensions) = S::dimensions(log2_q, row_len, n_0);
+        let codeword_len = S::codeword_len_from_dimensions(&a_dimensions, &b_dimensions);
 
         let num_column_opening = S::num_column_opening();
+        let num_proximity_testing =
+            S::num_proximity_testing_from_codeword_len(log2_q, codeword_len);
         let mut matrix_seed = [0u8; 32];
         rng.fill_bytes(&mut matrix_seed);
-        #[cfg(feature = "parallel")]
-        let (codeword_len, (a, b)) = rayon::join(
-            || S::codeword_len(log2_q, row_len, n_0),
-            || S::matrices(log2_q, row_len, n_0, ChaCha12Rng::from_seed(matrix_seed)),
+        let (a, b) = S::matrices_from_dimensions(
+            a_dimensions,
+            b_dimensions,
+            ChaCha12Rng::from_seed(matrix_seed),
         );
-
-        #[cfg(not(feature = "parallel"))]
-        let (codeword_len, (a, b)) = (
-            S::codeword_len(log2_q, row_len, n_0),
-            S::matrices(log2_q, row_len, n_0, ChaCha12Rng::from_seed(matrix_seed)),
-        );
-
-        let num_proximity_testing =
-            ceil(S::LAMBDA / (log2_q as f64 - (codeword_len as f64).log2()));
 
         Self {
             row_len,
@@ -208,7 +208,15 @@ pub trait BrakedownSpec: Debug {
     }
 
     fn num_proximity_testing(log2_q: usize, n: usize, n_0: usize) -> usize {
-        ceil(Self::LAMBDA / (log2_q as f64 - (Self::codeword_len(log2_q, n, n_0) as f64).log2()))
+        let (a, b) = Self::dimensions(log2_q, n, n_0);
+        Self::num_proximity_testing_from_codeword_len(
+            log2_q,
+            Self::codeword_len_from_dimensions(&a, &b),
+        )
+    }
+
+    fn num_proximity_testing_from_codeword_len(log2_q: usize, codeword_len: usize) -> usize {
+        ceil(Self::LAMBDA / (log2_q as f64 - (codeword_len as f64).log2()))
     }
 
     fn dimensions(
@@ -223,20 +231,26 @@ pub trait BrakedownSpec: Debug {
             .map(|(n, m)| SparseMatrixDimension::new(n, m, min(Self::c_n(n), m)))
             .take_while(|a| a.n > n_0)
             .collect_vec();
-        let b = a
-            .iter()
-            .map(|a| {
+        let b_jobs = a.to_vec();
+        let b: Vec<SparseMatrixDimension> = par_map_collect(b_jobs, |a| {
                 let n_prime = ceil(a.m as f64 * Self::R);
                 let m_prime = ceil(a.n as f64 * Self::R) - a.n - n_prime;
                 SparseMatrixDimension::new(n_prime, m_prime, min(Self::d_n(log2_q, a.n), m_prime))
-            })
-            .collect();
+            });
 
         (a, b)
     }
 
     fn codeword_len(log2_q: usize, n: usize, n_0: usize) -> usize {
         let (a, b) = Self::dimensions(log2_q, n, n_0);
+        Self::codeword_len_from_dimensions(&a, &b)
+    }
+
+    fn codeword_len_from_dimensions(
+        a: &[SparseMatrixDimension],
+        b: &[SparseMatrixDimension],
+    ) -> usize {
+        assert!(!a.is_empty());
         iter::empty()
             .chain(Some(a[0].n))
             .chain(a[..a.len() - 1].iter().map(|a| a.m))
@@ -249,9 +263,17 @@ pub trait BrakedownSpec: Debug {
         log2_q: usize,
         n: usize,
         n_0: usize,
-        mut rng: impl RngCore,
+        rng: impl RngCore,
     ) -> (Vec<SparseMatrix<F>>, Vec<SparseMatrix<F>>) {
         let (a, b) = Self::dimensions(log2_q, n, n_0);
+        Self::matrices_from_dimensions(a, b, rng)
+    }
+
+    fn matrices_from_dimensions<F: Field>(
+        a: Vec<SparseMatrixDimension>,
+        b: Vec<SparseMatrixDimension>,
+        mut rng: impl RngCore,
+    ) -> (Vec<SparseMatrix<F>>, Vec<SparseMatrix<F>>) {
         let matrix_seeds = iter::repeat_with(|| {
             let mut a_seed = [0u8; 32];
             let mut b_seed = [0u8; 32];
