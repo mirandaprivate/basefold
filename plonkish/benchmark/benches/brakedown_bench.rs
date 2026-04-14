@@ -64,6 +64,8 @@ fn print_bench_summary(
         "bench_summary pcs={} k={} poly_size={} sample_size={} proof_size_bits={}",
         pcs, k, poly_size, sample_size, proof_size_bits
     );
+    println!("proof_size_bytes={}", proof_size_bits / 8);
+    println!("proof_size_kib={:.4}", proof_size_bits as f64 / 8.0 / 1024.0);
     println!("commit_time_ms={}", commit.as_millis());
     println!("open_time_ms={}", open.as_millis());
     println!("verify_time_ms={}", verify.as_millis());

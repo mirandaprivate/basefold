@@ -307,7 +307,7 @@ macro_rules! impl_spec_128 {
             #[derive(Debug)]
             pub struct $name;
             impl BrakedownSpec for $name {
-                const LAMBDA: f64 = 128.0;
+                const LAMBDA: f64 = 80.0;
                 const ALPHA: f64 = $alpha;
                 const BETA: f64 = $beta;
                 const R: f64 = $r;
@@ -460,22 +460,22 @@ mod test {
     #[rustfmt::skip]
     #[test]
     fn spec_127_bit_field() {
-        assert_spec_correct::<BrakedownSpec1>(127, 0.02,  6, 33, 13265, 2);
-        assert_spec_correct::<BrakedownSpec2>(127, 0.03,  7, 26,  8768, 2);
-        assert_spec_correct::<BrakedownSpec3>(127, 0.04,  7, 22,  6593, 2);
-        assert_spec_correct::<BrakedownSpec4>(127, 0.05,  8, 19,  5279, 2);
-        assert_spec_correct::<BrakedownSpec5>(127, 0.06,  9, 21,  4390, 2);
-        assert_spec_correct::<BrakedownSpec6>(127, 0.0625, 10, 15, 4215, 2);
+        assert_spec_correct::<BrakedownSpec1>(127, 0.02,  6, 33, 8291, 1);
+        assert_spec_correct::<BrakedownSpec2>(127, 0.03,  7, 26, 5480, 1);
+        assert_spec_correct::<BrakedownSpec3>(127, 0.04,  7, 22, 4121, 1);
+        assert_spec_correct::<BrakedownSpec4>(127, 0.05,  8, 19, 3300, 1);
+        assert_spec_correct::<BrakedownSpec5>(127, 0.06,  9, 21, 2744, 1);
+        assert_spec_correct::<BrakedownSpec6>(127, 0.0625, 10, 15, 2634, 1);
     }
 
     #[rustfmt::skip]
     #[test]
     fn spec_254_bit_field() {
-        assert_spec_correct::<BrakedownSpec1>(254, 0.02,  6, 33, 13265, 1);
-        assert_spec_correct::<BrakedownSpec2>(254, 0.03,  7, 26,  8768, 1);
-        assert_spec_correct::<BrakedownSpec3>(254, 0.04,  7, 22,  6593, 1);
-        assert_spec_correct::<BrakedownSpec4>(254, 0.05,  8, 19,  5279, 1);
-        assert_spec_correct::<BrakedownSpec5>(254, 0.06,  9, 21,  4390, 1);
-        assert_spec_correct::<BrakedownSpec6>(254, 0.0625, 10, 15, 4215, 1);
+        assert_spec_correct::<BrakedownSpec1>(254, 0.02,  6, 33, 8291, 1);
+        assert_spec_correct::<BrakedownSpec2>(254, 0.03,  7, 26, 5480, 1);
+        assert_spec_correct::<BrakedownSpec3>(254, 0.04,  7, 22, 4121, 1);
+        assert_spec_correct::<BrakedownSpec4>(254, 0.05,  8, 19, 3300, 1);
+        assert_spec_correct::<BrakedownSpec5>(254, 0.06,  9, 21, 2744, 1);
+        assert_spec_correct::<BrakedownSpec6>(254, 0.0625, 10, 15, 2634, 1);
     }
 }
