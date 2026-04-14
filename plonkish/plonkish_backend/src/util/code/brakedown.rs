@@ -7,9 +7,11 @@
 use crate::util::{
     arithmetic::{horner, steps, Field, PrimeField},
     code::LinearCodes,
+    parallel::par_map_collect,
     Deserialize, Itertools, Serialize,
 };
-use rand::{distributions::Uniform, Rng, RngCore};
+use rand::{distributions::Uniform, Rng, RngCore, SeedableRng};
+use rand_chacha::ChaCha12Rng;
 use std::{
     cmp::{max, min},
     collections::BTreeSet,
@@ -228,15 +230,31 @@ pub trait BrakedownSpec: Debug {
         mut rng: impl RngCore,
     ) -> (Vec<SparseMatrix<F>>, Vec<SparseMatrix<F>>) {
         let (a, b) = Self::dimensions(log2_q, n, n_0);
-        a.into_iter()
+        let matrix_seeds = iter::repeat_with(|| {
+            let mut a_seed = [0u8; 32];
+            let mut b_seed = [0u8; 32];
+            rng.fill_bytes(&mut a_seed);
+            rng.fill_bytes(&mut b_seed);
+            (a_seed, b_seed)
+        })
+        .take(a.len())
+        .collect::<Vec<_>>();
+
+        let matrix_jobs = a
+            .into_iter()
             .zip(b)
-            .map(|(a, b)| {
-                (
-                    SparseMatrix::new(a, &mut rng),
-                    SparseMatrix::new(b, &mut rng),
-                )
-            })
-            .unzip()
+            .zip(matrix_seeds)
+            .collect::<Vec<_>>();
+
+        let matrices: Vec<(SparseMatrix<F>, SparseMatrix<F>)> =
+            par_map_collect(matrix_jobs, |((a, b), (a_seed, b_seed))| {
+            (
+                SparseMatrix::new(a, ChaCha12Rng::from_seed(a_seed)),
+                SparseMatrix::new(b, ChaCha12Rng::from_seed(b_seed)),
+            )
+        });
+
+        matrices.into_iter().unzip()
     }
 }
 
@@ -262,7 +280,7 @@ impl_spec_128!(
     (BrakedownSpec3, 0.1780, 0.0610, 1.521),
     (BrakedownSpec4, 0.2000, 0.0820, 1.640),
     (BrakedownSpec5, 0.2110, 0.0970, 1.616),
-    (BrakedownSpec6, 0.2380, 0.1205, 1.720)
+    (BrakedownSpec6, 0.2500, 0.1250, 2.000)
 );
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -286,21 +304,27 @@ pub struct SparseMatrix<F> {
 
 impl<F: Field> SparseMatrix<F> {
     fn new(dimension: SparseMatrixDimension, mut rng: impl RngCore) -> Self {
-        let cells = iter::repeat_with(|| {
+        let row_seeds = iter::repeat_with(|| {
+            let mut seed = [0u8; 32];
+            rng.fill_bytes(&mut seed);
+            seed
+        })
+        .take(dimension.n)
+        .collect::<Vec<_>>();
+        let rows: Vec<Vec<(usize, F)>> = par_map_collect(row_seeds, |seed| {
+            let mut row_rng = ChaCha12Rng::from_seed(seed);
             let mut columns = BTreeSet::<usize>::new();
-            (&mut rng)
+            (&mut row_rng)
                 .sample_iter(&Uniform::new(0, dimension.m))
                 .filter(|column| columns.insert(*column))
                 .take(dimension.d)
                 .count();
             columns
                 .into_iter()
-                .map(|column| (column, F::random(&mut rng)))
+                .map(|column| (column, F::random(&mut row_rng)))
                 .collect_vec()
-        })
-        .take(dimension.n)
-        .flatten()
-        .collect();
+        });
+        let cells = rows.into_iter().flatten().collect();
         Self { dimension, cells }
     }
 
@@ -383,7 +407,7 @@ mod test {
         assert_spec_correct::<BrakedownSpec3>(127, 0.04,  7, 22,  6593, 2);
         assert_spec_correct::<BrakedownSpec4>(127, 0.05,  8, 19,  5279, 2);
         assert_spec_correct::<BrakedownSpec5>(127, 0.06,  9, 21,  4390, 2);
-        assert_spec_correct::<BrakedownSpec6>(127, 0.07, 10, 20,  3755, 2);
+        assert_spec_correct::<BrakedownSpec6>(127, 0.0625, 10, 15, 4215, 2);
     }
 
     #[rustfmt::skip]
@@ -394,6 +418,6 @@ mod test {
         assert_spec_correct::<BrakedownSpec3>(254, 0.04,  7, 22,  6593, 1);
         assert_spec_correct::<BrakedownSpec4>(254, 0.05,  8, 19,  5279, 1);
         assert_spec_correct::<BrakedownSpec5>(254, 0.06,  9, 21,  4390, 1);
-        assert_spec_correct::<BrakedownSpec6>(254, 0.07, 10, 20,  3755, 1);
+        assert_spec_correct::<BrakedownSpec6>(254, 0.0625, 10, 15, 4215, 1);
     }
 }
