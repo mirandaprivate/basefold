@@ -59,18 +59,30 @@ impl<F: PrimeField> Brakedown<F> {
     pub fn new_multilinear<S: BrakedownSpec>(
         num_vars: usize,
         n_0: usize,
-        rng: impl RngCore,
+        mut rng: impl RngCore,
     ) -> Self {
         assert!(1 << num_vars > n_0);
 
         let log2_q = F::NUM_BITS as usize;
         let row_len = Self::near_square_row_len::<S>(num_vars, n_0);
 
-//	let row_len = (((1 << num_vars) as f64).sqrt() as usize).next_power_of_two() as usize;
-        let codeword_len = S::codeword_len(log2_q, row_len, n_0);
         let num_column_opening = S::num_column_opening();
-        let num_proximity_testing = S::num_proximity_testing(log2_q, row_len, n_0);
-        let (a, b) = S::matrices(log2_q, row_len, n_0, rng);
+        let mut matrix_seed = [0u8; 32];
+        rng.fill_bytes(&mut matrix_seed);
+        #[cfg(feature = "parallel")]
+        let (codeword_len, (a, b)) = rayon::join(
+            || S::codeword_len(log2_q, row_len, n_0),
+            || S::matrices(log2_q, row_len, n_0, ChaCha12Rng::from_seed(matrix_seed)),
+        );
+
+        #[cfg(not(feature = "parallel"))]
+        let (codeword_len, (a, b)) = (
+            S::codeword_len(log2_q, row_len, n_0),
+            S::matrices(log2_q, row_len, n_0, ChaCha12Rng::from_seed(matrix_seed)),
+        );
+
+        let num_proximity_testing =
+            ceil(S::LAMBDA / (log2_q as f64 - (codeword_len as f64).log2()));
 
         Self {
             row_len,
