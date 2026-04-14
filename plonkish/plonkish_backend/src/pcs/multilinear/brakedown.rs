@@ -104,8 +104,8 @@ where
     fn setup(poly_size: usize, _: usize, rng: impl RngCore) -> Result<Self::Param, Error> {
         assert!(poly_size.is_power_of_two());
         let num_vars = poly_size.ilog2() as usize;
-        // The paper uses 30 as the default base length for the recursive encoder.
-        let brakedown = Brakedown::new_multilinear::<S>(num_vars, 30.min((1 << num_vars) - 1), rng);
+        // Use 33 as the default base length for the recursive encoder.
+        let brakedown = Brakedown::new_multilinear::<S>(num_vars, 33.min((1 << num_vars) - 1), rng);
         Ok(MultilinearBrakedownParams {
             num_vars,
             num_rows: (1 << num_vars) / brakedown.row_len(),

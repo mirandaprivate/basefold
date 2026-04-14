@@ -30,6 +30,26 @@ pub struct Brakedown<F> {
 }
 
 impl<F: PrimeField> Brakedown<F> {
+    fn near_square_row_len<S: BrakedownSpec>(num_vars: usize, n_0: usize) -> usize {
+        let poly_len = 1usize << num_vars;
+        let min_row_len = (n_0 + 1).next_power_of_two().min(poly_len);
+        let col_openings = S::num_column_opening();
+
+        let approx_codeword_len = (((col_openings * poly_len) as f64).sqrt().ceil() as usize)
+            .saturating_mul(2)
+            .next_power_of_two()
+            .max(min_row_len)
+            .min(poly_len);
+        let degree_tests =
+            S::num_proximity_testing(F::NUM_BITS as usize, approx_codeword_len, n_0).max(1);
+        let near_square_row_len = (((col_openings * poly_len) as f64 / degree_tests as f64)
+            .sqrt()
+            .ceil() as usize)
+            .next_power_of_two();
+
+        near_square_row_len.max(min_row_len).min(poly_len)
+    }
+
     pub fn proof_size<S: BrakedownSpec>(n_0: usize, c: usize, r: usize) -> usize {
         let log2_q = F::NUM_BITS as usize;
         let num_ldt = S::num_proximity_testing(log2_q, c, n_0);
@@ -44,18 +64,7 @@ impl<F: PrimeField> Brakedown<F> {
         assert!(1 << num_vars > n_0);
 
         let log2_q = F::NUM_BITS as usize;
-        let min_log2_n = (n_0 + 1).next_power_of_two().ilog2() as usize;
-
-        let row_len_jobs = (min_log2_n..=num_vars).collect::<Vec<_>>();
-        let row_len_candidates: Vec<(usize, usize)> = par_map_collect(row_len_jobs, |log2_n| {
-            let row_len = 1 << log2_n;
-            let proof_size = Self::proof_size::<S>(n_0, row_len, 1 << (num_vars - log2_n));
-            (proof_size, row_len)
-        });
-        let (.., row_len) = row_len_candidates
-            .into_iter()
-            .min_by_key(|(proof_size, row_len)| (*proof_size, *row_len))
-            .unwrap();
+        let row_len = Self::near_square_row_len::<S>(num_vars, n_0);
 
 //	let row_len = (((1 << num_vars) as f64).sqrt() as usize).next_power_of_two() as usize;
         let codeword_len = S::codeword_len(log2_q, row_len, n_0);
