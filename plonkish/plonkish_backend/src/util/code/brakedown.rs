@@ -5,9 +5,9 @@
 //! [GLSTW21]: https://eprint.iacr.org/2021/1043.pdf
 
 use crate::util::{
-    arithmetic::{horner, steps, Field, PrimeField},
+    arithmetic::{div_ceil, horner, steps, Field, PrimeField},
     code::LinearCodes,
-    parallel::par_map_collect,
+    parallel::{num_threads, par_map_collect},
     Deserialize, Itertools, Serialize,
 };
 use rand::{distributions::Uniform, Rng, RngCore, SeedableRng};
@@ -304,27 +304,34 @@ pub struct SparseMatrix<F> {
 
 impl<F: Field> SparseMatrix<F> {
     fn new(dimension: SparseMatrixDimension, mut rng: impl RngCore) -> Self {
-        let row_seeds = iter::repeat_with(|| {
-            let mut seed = [0u8; 32];
-            rng.fill_bytes(&mut seed);
-            seed
-        })
-        .take(dimension.n)
-        .collect::<Vec<_>>();
-        let rows: Vec<Vec<(usize, F)>> = par_map_collect(row_seeds, |seed| {
+        let chunk_size = div_ceil(dimension.n, num_threads()).max(1);
+        let row_jobs = (0..dimension.n)
+            .step_by(chunk_size)
+            .map(|start| {
+                let mut seed = [0u8; 32];
+                rng.fill_bytes(&mut seed);
+                let row_count = (dimension.n - start).min(chunk_size);
+                (seed, row_count)
+            })
+            .collect::<Vec<_>>();
+        let row_chunks: Vec<Vec<(usize, F)>> = par_map_collect(row_jobs, |(seed, row_count)| {
             let mut row_rng = ChaCha12Rng::from_seed(seed);
-            let mut columns = BTreeSet::<usize>::new();
-            (&mut row_rng)
-                .sample_iter(&Uniform::new(0, dimension.m))
-                .filter(|column| columns.insert(*column))
-                .take(dimension.d)
-                .count();
-            columns
-                .into_iter()
-                .map(|column| (column, F::random(&mut row_rng)))
-                .collect_vec()
+            (0..row_count)
+                .flat_map(|_| {
+                    let mut columns = BTreeSet::<usize>::new();
+                    (&mut row_rng)
+                        .sample_iter(&Uniform::new(0, dimension.m))
+                        .filter(|column| columns.insert(*column))
+                        .take(dimension.d)
+                        .count();
+                    columns
+                        .into_iter()
+                        .map(|column| (column, F::random(&mut row_rng)))
+                        .collect_vec()
+                })
+                .collect()
         });
-        let cells = rows.into_iter().flatten().collect();
+        let cells = row_chunks.into_iter().flatten().collect();
         Self { dimension, cells }
     }
 
